@@ -1,0 +1,42 @@
+[submodule "manager/KernelSU"]
+	path = manager/KernelSU
+	url = https://github.com/tiann/KernelSU.git
+[submodule "src/6.1"]
+	path = src/6.1
+	url = https://github.com/ramabondanp/android_kernel_common-6.1.git
+	branch = android14-6.1
+[submodule "src/6.6"]
+	path = src/6.6
+	url = https://github.com/ramabondanp/android_kernel_common-6.6.git
+	branch = android15-6.6
+[submodule "src/5.10"]
+	path = src/5.10
+	url = https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git
+	branch = chihiro-rebase
+[submodule "src/4.19"]
+	path = src/4.19
+	url = https://github.com/Mayuri-Chan/android_kernel_xiaomi_gale.git
+	branch = cip
+[submodule "manager/KernelSU-4.19"]
+	path = manager/KernelSU-4.19
+	url = https://github.com/xxblebleblexx/KernelSU.git
+	branch = main
+[submodule "manager/KernelSU-Next"]
+	path = manager/KernelSU-Next
+	url = https://github.com/pershoot/KernelSU-Next.git
+	branch = dev-susfs
+[submodule "manager/Rissu"]
+	path = manager/Rissu
+	url = https://github.com/RapliVx/KernelSU.git
+	branch = susfs-mambo-master
+[submodule "manager/ResukiSU"]
+	path = manager/ResukiSU
+	url = https://github.com/Kingfinik98/ReSukiSU.git
+	branch = main
+[submodule "manager/Wild_KSU"]
+	path = manager/Wild_KSU
+	url = https://github.com/WildKernels/Wild_KSU.git
+	branch = stable
+[submodule "manager/KernelSU-Next-4.19"]
+	path = manager/KernelSU-Next-4.19
+	url = https://github.com/KernelSU-Next/KernelSU-Next.git
