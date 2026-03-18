@@ -1,4 +1,4 @@
-name: Setup Submodules (kernels + managers)
+name: Setup / Update Submodules (kernels + managers)
 
 on:
   workflow_dispatch:
@@ -14,51 +14,67 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          submodules: recursive
           persist-credentials: true
 
       - name: Configure git
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
+          git config --global --add safe.directory '*'
 
-      - name: Clean old layout
+      - name: Remove old stub (once)
         run: |
           git rm -r src || true
-          rm -rf kernel manager
 
-      # ---------------- KERNELS ----------------
-      - name: Add kernel submodules
-        run: |
-          set -e
-          git submodule add --depth=1 -b android14-6.1 https://github.com/ramabondanp/android_kernel_common-6.1.git kernel/6.1
-          git submodule add --depth=1 -b android15-6.6 https://github.com/ramabondanp/android_kernel_common-6.6.git kernel/6.6
-          git submodule add --depth=1 -b chihiro-rebase https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git kernel/5.10
-          git submodule add --depth=1 -b cip https://github.com/Mayuri-Chan/android_kernel_xiaomi_gale.git kernel/4.19
-
-      # ---------------- MANAGERS (FULLY DISAMBIGUATED) ----------------
-      - name: Add manager submodules
+      # -------- helper: add if missing --------
+      - name: Ensure submodules exist
+        shell: bash
         run: |
           set -e
 
-          # KernelSU
-          git submodule add --depth=1 https://github.com/tiann/KernelSU.git manager/kernelsu-main
-          git submodule add --depth=1 https://github.com/xxblebleblexx/KernelSU.git manager/kernelsu-4.19
+          add_if_missing () {
+            local path="$1"
+            local url="$2"
+            local branch="$3"
 
-          # KernelSU-Next
-          git submodule add --depth=1 -b dev-susfs https://github.com/pershoot/KernelSU-Next.git manager/kernelsu-next-dev-susfs
-          git submodule add --depth=1 -b next https://github.com/KernelSU-Next/KernelSU-Next.git manager/kernelsu-next-legacy-4.19
+            if [ ! -d "$path/.git" ]; then
+              if [ -n "$branch" ]; then
+                git submodule add --depth=1 -b "$branch" "$url" "$path"
+              else
+                git submodule add --depth=1 "$url" "$path"
+              fi
+            else
+              echo "exists: $path"
+            fi
+          }
 
-          # Rissu (MamboSU)
-          git submodule add --depth=1 -b susfs-mambo-master https://github.com/RapliVx/KernelSU.git manager/mambo-susfs
+          # -------- KERNELS --------
+          add_if_missing kernel/6.1 https://github.com/ramabondanp/android_kernel_common-6.1.git android14-6.1
+          add_if_missing kernel/6.6 https://github.com/ramabondanp/android_kernel_common-6.6.git android15-6.6
+          add_if_missing kernel/5.10 https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git chihiro-rebase
+          add_if_missing kernel/4.19 https://github.com/Mayuri-Chan/android_kernel_xiaomi_gale.git cip
 
-          # ResukiSU
-          git submodule add --depth=1 https://github.com/Kingfinik98/ReSukiSU.git manager/resukisu-main
+          # -------- MANAGERS --------
+          add_if_missing manager/kernelsu-main https://github.com/tiann/KernelSU.git ""
+          add_if_missing manager/kernelsu-4.19 https://github.com/xxblebleblexx/KernelSU.git ""
 
-          # Wild KSU
-          git submodule add --depth=1 -b wild https://github.com/WildKernels/Wild_KSU.git manager/wild-ksu
+          add_if_missing manager/kernelsu-next-dev-susfs https://github.com/pershoot/KernelSU-Next.git dev-susfs
+          add_if_missing manager/kernelsu-next-legacy-4.19 https://github.com/KernelSU-Next/KernelSU-Next.git next
 
-      - name: Commit and push
+          add_if_missing manager/mambo-susfs https://github.com/RapliVx/KernelSU.git susfs-mambo-master
+          add_if_missing manager/resukisu-main https://github.com/Kingfinik98/ReSukiSU.git ""
+          add_if_missing manager/wild-ksu https://github.com/WildKernels/Wild_KSU.git wild
+
+      # -------- update all existing --------
+      - name: Update submodules
         run: |
-          git add .gitmodules
-          git commit -m "Replace stubs with kernel + manager submodules (versioned, branch-aligned)"
+          set -e
+          git submodule sync --recursive
+          git submodule update --init --recursive --remote
+
+      - name: Commit and push (if changed)
+        run: |
+          git add .gitmodules */*/ .git/modules || true
+          git commit -m "Sync submodules (create if missing, update if exists)" || echo "No changes"
           git push
