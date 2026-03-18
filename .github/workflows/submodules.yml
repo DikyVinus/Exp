@@ -1,4 +1,4 @@
-name: Submodule Sync (Deterministic)
+name: Submodule Sync (Deterministic, Non-Blocking)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
           rm -rf kernel manager src
           git rm -r --cached kernel manager src 2>/dev/null || true
 
-      - name: Ensure submodules (strict)
+      - name: Ensure submodules (clone-controlled)
         shell: bash
         run: |
           set -euo pipefail
@@ -43,26 +43,22 @@ jobs:
             local url="$2"
             local branch="$3"
 
-            # purge broken/mismatched state
-            if git config -f .gitmodules --get "submodule.${path}.url" >/dev/null 2>&1; then
-              local cur_url
-              cur_url="$(git config -f .gitmodules --get "submodule.${path}.url" || true)"
-              local cur_branch
-              cur_branch="$(git config -f .gitmodules --get "submodule.${path}.branch" || true)"
+            # full purge
+            git submodule deinit -f "$path" 2>/dev/null || true
+            rm -rf ".git/modules/$path" "$path"
+            git rm -r --cached "$path" 2>/dev/null || true
 
-              if [[ "$cur_url" != "$url" || "$cur_branch" != "$branch" ]]; then
-                git submodule deinit -f "$path" || true
-                rm -rf ".git/modules/$path" "$path"
-                git rm -r --cached "$path" 2>/dev/null || true
-              fi
+            # controlled clone (no hang possible)
+            if [ -n "$branch" ]; then
+              timeout 300 git clone --depth=1 --branch "$branch" --single-branch --progress "$url" "$path"
+            else
+              timeout 300 git clone --depth=1 --progress "$url" "$path"
             fi
 
-            # add fresh
+            # register as submodule (metadata only)
+            git submodule add -f "$url" "$path"
             if [ -n "$branch" ]; then
-              git submodule add -f -b "$branch" --depth=1 "$url" "$path"
               git config -f .gitmodules "submodule.${path}.branch" "$branch"
-            else
-              git submodule add -f --depth=1 "$url" "$path"
             fi
           }
 
@@ -81,18 +77,11 @@ jobs:
           ensure manager/resukisu-main https://github.com/Kingfinik98/ReSukiSU.git ""
           ensure manager/wild-ksu https://github.com/WildKernels/Wild_KSU.git wild
 
-      - name: Sync + init
+      - name: Sync metadata
         shell: bash
         run: |
           set -euo pipefail
           git submodule sync --recursive
-          git submodule update --init --recursive --depth=1 --jobs=4
-
-      - name: Update remote heads (non-blocking)
-        shell: bash
-        run: |
-          set -euo pipefail
-          git submodule update --remote --recursive || true
 
       - name: Commit
         shell: bash
@@ -100,6 +89,6 @@ jobs:
           set -euo pipefail
           if ! git diff --quiet || ! git diff --cached --quiet; then
             git add .gitmodules kernel manager
-            git commit -m "submodules: deterministic sync"
+            git commit -m "submodules: deterministic sync (non-blocking)"
             git push
           fi
