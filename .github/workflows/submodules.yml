@@ -17,15 +17,17 @@ jobs:
           persist-credentials: true
           fetch-depth: 1
 
-      - run: |
+      - shell: bash
+        run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           git config --global --add safe.directory '*'
 
-      - run: |
+      - shell: bash
+        run: |
           git rm -r src || true
 
-      - name: Ensure submodules (hardened + branch-safe)
+      - name: Ensure submodules
         shell: bash
         run: |
           set -euo pipefail
@@ -35,40 +37,30 @@ jobs:
             local url="$2"
             local branch="$3"
 
-            # Already valid submodule
             if git submodule status "$path" >/dev/null 2>&1; then
               echo "valid: $path"
               return
             fi
 
-            # Broken directory cleanup
             if [ -d "$path" ]; then
-              echo "fixing broken dir: $path"
               rm -rf "$path"
               git rm -r --cached "$path" 2>/dev/null || true
             fi
 
-            echo "adding: $path"
-
             if [ -n "$branch" ]; then
-              # Branch-safe add (no --depth here)
               git submodule add -b "$branch" "$url" "$path"
-
-              # Then shallow manually
-              git -C "$path" fetch origin "$branch" --depth=1
-              git -C "$path" checkout "$branch"
+              git -C "$path" fetch origin "${branch}" --depth=1
+              git -C "$path" checkout "${branch}"
             else
               git submodule add --depth=1 "$url" "$path"
             fi
           }
 
-          # -------- KERNELS --------
           ensure_submodule kernel/6.1 https://github.com/ramabondanp/android_kernel_common-6.1.git android14-6.1
           ensure_submodule kernel/6.6 https://github.com/ramabondanp/android_kernel_common-6.6.git android15-6.6
           ensure_submodule kernel/5.10 https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git chihiro-rebase
           ensure_submodule kernel/4.19 https://github.com/Mayuri-Chan/android_kernel_xiaomi_gale.git cip
 
-          # -------- MANAGERS --------
           ensure_submodule manager/kernelsu-main https://github.com/tiann/KernelSU.git ""
           ensure_submodule manager/kernelsu-4.19 https://github.com/xxblebleblexx/KernelSU.git ""
 
@@ -79,23 +71,24 @@ jobs:
           ensure_submodule manager/resukisu-main https://github.com/Kingfinik98/ReSukiSU.git ""
           ensure_submodule manager/wild-ksu https://github.com/WildKernels/Wild_KSU.git wild
 
-      - name: Sync + update (deterministic)
+      - shell: bash
         run: |
           set -euo pipefail
           git submodule sync --recursive
           git submodule update --init --recursive --depth=1
 
-      - name: Optional: update to latest remote
+      - shell: bash
         run: |
           set -euo pipefail
           git submodule update --remote --recursive || true
 
-      - name: Commit only if changed
+      - name: Commit and push
+        shell: bash
         run: |
           set -e
           if ! git diff --quiet || ! git diff --cached --quiet; then
             git add .gitmodules kernel manager
-            git commit -m "Sync submodules (branch-safe, self-healing)"
+            git commit -m "Sync submodules"
             git push
           else
             echo "No changes"
