@@ -1,0 +1,11 @@
+--- a/drivers/kernelsu/supercalls.c
++++ b/drivers/kernelsu/supercalls.c
+@@ -34,7 +34,7 @@
+ #include "selinux/selinux.h"
+ #include "sucompat.h"
+
+-#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++#if 0
+ #include <linux/utsname.h>
+ extern int susfs_spoof_uname(struct new_utsname* name);
+ #endif

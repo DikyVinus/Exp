@@ -52,6 +52,7 @@ runs:
 
         VERSION="${{ inputs.kernel_version }}"
         ROOT_VARIANT="${{ inputs.root_variant }}"
+        HOOK_METHOD="${{ inputs.hook_method }}"
         BASE="$GITHUB_WORKSPACE/manager"
 
         DEFCONFIG="arch/arm64/configs/gki_defconfig"
@@ -82,10 +83,31 @@ runs:
           local path="$1"
           local arg="$2"
 
-          [ -z "$path" ] && return
+          if [ -z "$path" ]; then
+            echo "Error: Manager path is empty. Silent manager failure prevented."
+            exit 1
+          fi
 
           if [ -f "$path/kernel/setup.sh" ]; then
             bash "$path/kernel/setup.sh" "$arg"
+            if [ $? -ne 0 ]; then
+              echo "Error: setup.sh failed for manager $path with arg $arg"
+              exit 1
+            fi
+          else
+            echo "Error: setup.sh not found in manager path $path"
+            exit 1
+          fi
+        }
+
+        apply_patch() {
+          local patch_file="$1"
+          local target_dir="${2:-.}"
+          echo "Applying patch: $patch_file in $target_dir"
+          (cd "$target_dir" && patch -p1 --forward < "$patch_file" || { echo "Error: Patch failed: $patch_file"; exit 1; })
+          if find "$target_dir" -name "*.rej" | grep -q .; then
+            echo "Error: Reject files found after applying $patch_file"
+            exit 1
           fi
         }
 
@@ -95,18 +117,26 @@ runs:
         case "$ROOT_VARIANT" in
           KernelSU)
             MGR=$(resolve_manager "KernelSU")
-            [ "$VERSION" = "4.19" ] && install_manager "$MGR" "susfs-rksu-master" || install_manager "$MGR" "main"
+            if [ "$VERSION" = "4.19" ]; then
+              install_manager "$MGR" "susfs-rksu-master"
+            else
+              install_manager "$MGR" "main"
+            fi
             ;;
 
           KernelSU-Next)
             MGR=$(resolve_manager "KernelSU-Next")
-            [ "$VERSION" = "4.19" ] && install_manager "$MGR" "legacy" || install_manager "$MGR" "dev-susfs"
+            if [ "$VERSION" = "4.19" ]; then
+              install_manager "$MGR" "legacy"
+            else
+              install_manager "$MGR" "dev-susfs"
+            fi
             ;;
 
           "KernelSU-Next (All Managers)")
             MGR=$(resolve_manager "KernelSU-Next")
             install_manager "$MGR" "dev-susfs"
-            (cd KernelSU-Next && patch -p1 --forward < "$GITHUB_WORKSPACE/.github/patches/ksun-add-more-managers-support.patch" || true)
+            apply_patch "$GITHUB_WORKSPACE/.github/patches/ksun-add-more-managers-support.patch" "KernelSU-Next"
             ;;
 
           "Rissu (MamboSU)")
@@ -129,22 +159,30 @@ runs:
         # BASIC KSU FIX
         # =========================
         if [ "$ROOT_VARIANT" != "Vanilla" ]; then
-          sed -i 's/$(error KSU requires Kprobes; enable it (defconfig))/# disabled/' drivers/kernelsu/Kbuild || true
+          sed -i 's/$(error KSU requires Kprobes; enable it (defconfig))/# disabled/' drivers/kernelsu/Kbuild
         fi
 
         # =========================
         # DEFCONFIG BASE (NO HOOKS YET)
         # =========================
         if [ "$ROOT_VARIANT" != "Vanilla" ]; then
+          sed -i '/CONFIG_KSU=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KPM=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KPROBES=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KPROBE_EVENTS=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_OVERLAY_FS=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SYSCALL_HOOK=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SUS_SU=/d' "$DEFCONFIG"
+
           cat >> "$DEFCONFIG" <<EOF
-CONFIG_KSU=y
-CONFIG_KPM=y
-CONFIG_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_OVERLAY_FS=y
-CONFIG_KSU_SYSCALL_HOOK=n
-CONFIG_KSU_SUSFS_SUS_SU=n
-EOF
+        CONFIG_KSU=y
+        CONFIG_KPM=y
+        CONFIG_KPROBES=y
+        CONFIG_KPROBE_EVENTS=y
+        CONFIG_OVERLAY_FS=y
+        CONFIG_KSU_SYSCALL_HOOK=n
+        CONFIG_KSU_SUSFS_SUS_SU=n
+        EOF
         fi
 
         # =========================
@@ -158,9 +196,9 @@ EOF
           VERSION_CODE=$((COUNT + OFFSET))
           cd ..
 
-          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${TAG}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
+          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${VERSION_CODE}|" drivers/kernelsu/Kbuild
+          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${TAG}|" drivers/kernelsu/Kbuild
+          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${VERSION_CODE}|" drivers/kernelsu/Kbuild
 
         elif [ -d "KernelSU" ]; then
           cd KernelSU
@@ -170,9 +208,9 @@ EOF
           VERSION_CODE=$((COUNT + OFFSET))
           cd ..
 
-          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${TAG}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
+          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${VERSION_CODE}|" drivers/kernelsu/Kbuild
+          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${TAG}|" drivers/kernelsu/Kbuild
+          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${VERSION_CODE}|" drivers/kernelsu/Kbuild
         fi
 
         # =========================
@@ -185,7 +223,7 @@ EOF
           case "$VERSION" in
             4.19)
               if [[ "$DEFCONFIG" == *"gale"* ]]; then
-                patch -p1 --forward --fuzz=3 < "$PATCH_ROOT/susfs4ksu/4.19/gale/susfs_gale.patch" || true
+                apply_patch "$PATCH_ROOT/susfs4ksu/4.19/gale/susfs_gale.patch"
               fi
               ;;
 
@@ -201,8 +239,14 @@ EOF
               cp -r "$SUS_BASE/fs" . 2>/dev/null || true
               cp -r "$SUS_BASE/include" . 2>/dev/null || true
 
-              find "$SUS_BASE" -type f -name "*.patch" | sort | while read p; do
-                patch -p1 --forward --fuzz=3 < "$p" || true
+              if ls "$SUS_BASE"/50_add_susfs_*.patch 1> /dev/null 2>&1; then
+                for p in "$SUS_BASE"/50_add_susfs_*.patch; do
+                  apply_patch "$p"
+                done
+              fi
+
+              find "$SUS_BASE" -type f -name "*.patch" ! -name "50_add_susfs_*.patch" | sort -V | while IFS= read -r p; do
+                apply_patch "$p"
               done
             fi
           fi
@@ -212,27 +256,47 @@ EOF
         # DEFCONFIG (SUSFS FLAGS)
         # =========================
         if [ "$HOOK_METHOD" = "susfs" ] || [ "$ROOT_VARIANT" = "ResukiSU" ]; then
+          sed -i '/CONFIG_KSU_SUSFS=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SUS_PATH=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SUS_MOUNT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SUS_KSTAT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SUS_OVERLAYFS=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_TRY_UMOUNT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SPOOF_UNAME=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_ENABLE_LOG=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_SUSFS_OPEN_REDIRECT=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_MANUAL_HOOK=/d' "$DEFCONFIG"
+          sed -i '/CONFIG_KSU_HAS_MANUAL_HOOK=/d' "$DEFCONFIG"
+
           cat >> "$DEFCONFIG" <<EOF
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=y
-CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-CONFIG_KSU_MANUAL_HOOK=n
-CONFIG_KSU_HAS_MANUAL_HOOK=n
-EOF
+        CONFIG_KSU_SUSFS=y
+        CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+        CONFIG_KSU_SUSFS_SUS_PATH=y
+        CONFIG_KSU_SUSFS_SUS_MOUNT=y
+        CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=y
+        CONFIG_KSU_SUSFS_SUS_KSTAT=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y
+        CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
+        CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+        CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+        CONFIG_KSU_SUSFS_ENABLE_LOG=y
+        CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+        CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+        CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+        CONFIG_KSU_MANUAL_HOOK=n
+        CONFIG_KSU_HAS_MANUAL_HOOK=n
+        EOF
         fi
 
         # =========================
@@ -240,11 +304,11 @@ EOF
         # =========================
         case "$ROOT_VARIANT" in
           KernelSU|KernelSU-Next|"KernelSU-Next (All Managers)")
-            sed -i 's/#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME/#if 0/' drivers/kernelsu/supercalls.c || true
+            apply_patch "$GITHUB_WORKSPACE/.github/patches/ksu_susfs_spoof_uname.patch"
             ;;
         esac
 
-        - name: Apply BBG
+    - name: Apply BBG
       if: inputs.apply_bbg == 'Yes'
       uses: ./.github/actions/bbg
 
@@ -259,23 +323,33 @@ EOF
         [ -f arch/arm64/configs/rosemary_defconfig ] && DEFCONFIG="arch/arm64/configs/rosemary_defconfig"
         [ -f arch/arm64/configs/gale_defconfig ] && DEFCONFIG="arch/arm64/configs/gale_defconfig"
 
+        sed -i '/CONFIG_VIRTUALIZATION=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM_ARM_HOST=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM_ARM_TIMER=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM_ARM_VGIC=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM_ARM_VGIC_V3=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM_ARM_PMU=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM_VFIO=/d' "$DEFCONFIG"
+        sed -i '/CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT=/d' "$DEFCONFIG"
+
         cat >> "$DEFCONFIG" <<EOF
-CONFIG_VIRTUALIZATION=y
-CONFIG_KVM=m
-CONFIG_KVM_ARM_HOST=y
-CONFIG_KVM_ARM_TIMER=y
-CONFIG_KVM_ARM_VGIC=y
-CONFIG_KVM_ARM_VGIC_V3=y
-CONFIG_KVM_ARM_PMU=y
-CONFIG_KVM_VFIO=y
-CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT=y
-EOF
+        CONFIG_VIRTUALIZATION=y
+        CONFIG_KVM=m
+        CONFIG_KVM_ARM_HOST=y
+        CONFIG_KVM_ARM_TIMER=y
+        CONFIG_KVM_ARM_VGIC=y
+        CONFIG_KVM_ARM_VGIC_V3=y
+        CONFIG_KVM_ARM_PMU=y
+        CONFIG_KVM_VFIO=y
+        CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT=y
+        EOF
 
         echo "arch/arm64/kvm/kvm.ko" >> android/gki_aarch64_modules
 
         if [ -f modules.bzl ]; then
-          sed -i '/COMMON_GKI_MODULES_LIST = \[/a\    "arch/arm64/kvm/kvm.ko",' modules.bzl || true
-          sed -i '/_COMMON_GKI_MODULES_LIST = \[/a\    "arch/arm64/kvm/kvm.ko",' modules.bzl || true
+          sed -i '/COMMON_GKI_MODULES_LIST = \[/a\    "arch/arm64/kvm/kvm.ko",' modules.bzl
+          sed -i '/_COMMON_GKI_MODULES_LIST = \[/a\    "arch/arm64/kvm/kvm.ko",' modules.bzl
         fi
 
 
@@ -291,19 +365,29 @@ EOF
         VERSION="${{ inputs.kernel_version }}"
         PATCH_ROOT="$GITHUB_WORKSPACE/.github/patches"
 
+        apply_patch() {
+          local patch_file="$1"
+          echo "Applying patch: $patch_file"
+          patch -p1 --forward --fuzz=3 < "$patch_file" || { echo "Error: Patch failed: $patch_file"; exit 1; }
+          if find . -name "*.rej" | grep -q .; then
+            echo "Error: Reject files found after applying $patch_file"
+            exit 1
+          fi
+        }
+
         run_item() {
           local item="$1"
 
           if [ -f "$item" ]; then
             case "$item" in
-              *.patch) patch -p1 --forward --fuzz=3 < "$item" || true ;;
-              *.sh) bash "$item" || true ;;
+              *.patch) apply_patch "$item" ;;
+              *.sh) bash "$item" ;;
             esac
           fi
 
           if [ -d "$item" ]; then
             if [ -f "$item/apply.sh" ]; then
-              bash "$item/apply.sh" || true
+              bash "$item/apply.sh"
             else
               find "$item" -type f \( -name "*.patch" -o -name "*.sh" \) | sort | while read f; do
                 run_item "$f"
@@ -346,19 +430,29 @@ EOF
 
         PATCH_ROOT="$GITHUB_WORKSPACE/.github/patches"
 
+        apply_patch() {
+          local patch_file="$1"
+          echo "Applying patch: $patch_file"
+          patch -p1 --forward --fuzz=3 < "$patch_file" || { echo "Error: Patch failed: $patch_file"; exit 1; }
+          if find . -name "*.rej" | grep -q .; then
+            echo "Error: Reject files found after applying $patch_file"
+            exit 1
+          fi
+        }
+
         run_item() {
           local item="$1"
 
           if [ -f "$item" ]; then
             case "$item" in
-              *.patch) patch -p1 --forward --fuzz=3 < "$item" || true ;;
-              *.sh) bash "$item" || true ;;
+              *.patch) apply_patch "$item" ;;
+              *.sh) bash "$item" ;;
             esac
           fi
 
           if [ -d "$item" ]; then
             if [ -f "$item/apply.sh" ]; then
-              bash "$item/apply.sh" || true
+              bash "$item/apply.sh"
             else
               find "$item" -type f \( -name "*.patch" -o -name "*.sh" \) | sort | while read f; do
                 run_item "$f"
@@ -367,10 +461,10 @@ EOF
           fi
         }
 
-        find "$PATCH_ROOT" -maxdepth 1 -mindepth 1 \
-          ! -name "susfs4ksu" \
-          ! -name "zzh_patches" \
-          ! -name "$VERSION" \
+        find "$PATCH_ROOT" -mindepth 1 \
+          ! -path "*/susfs4ksu*" \
+          ! -path "*/zzh_patches*" \
+          ! -path "*/$VERSION*" \
           | sort | while read item; do
             run_item "$item"
           done
@@ -384,7 +478,7 @@ EOF
       working-directory: ${{ env.SRC_DIR }}
       run: |
         if [ "${{ inputs.performance_patch }}" = "Snapdragon" ]; then
-          cp $GITHUB_WORKSPACE/.github/patches/qcom-cpufreq-hw.c drivers/cpufreq/qcom-cpufreq-hw.c || true
+          cp $GITHUB_WORKSPACE/.github/patches/qcom-cpufreq-hw.c drivers/cpufreq/qcom-cpufreq-hw.c
         fi
 
 
@@ -400,15 +494,15 @@ EOF
 
         BASE="$GITHUB_WORKSPACE/.github/patches/zzh_patches/zram"
 
-        cp "$BASE/include/linux/lz4.h" ./include/linux/lz4.h || true
-        cp -r "$BASE/lz4/"* ./lib/lz4/ || true
+        cp "$BASE/include/linux/lz4.h" ./include/linux/lz4.h
+        cp -r "$BASE/lz4/"* ./lib/lz4/
 
-        bash "$BASE/apply_lz4_neon.sh" || true
+        bash "$BASE/apply_lz4_neon.sh"
 
-        cat "$GITHUB_WORKSPACE/.github/patches/zzh_patches/config/zram.config" >> arch/arm64/configs/gki_defconfig || true
+        cat "$GITHUB_WORKSPACE/.github/patches/zzh_patches/config/zram.config" >> arch/arm64/configs/gki_defconfig
 
         if [ -f modules.bzl ]; then
-          sed -i 's/"drivers\/block\/zram\/zram\.ko",//g; s/"mm\/zsmalloc\.ko",//g' modules.bzl || true
+          sed -i 's/"drivers\/block\/zram\/zram\.ko",//g; s/"mm\/zsmalloc\.ko",//g' modules.bzl
         fi
 
 
@@ -422,9 +516,9 @@ EOF
       run: |
         set -euo pipefail
 
-        bash $GITHUB_WORKSPACE/.github/patches/xiaomi_compat.sh || true
+        bash $GITHUB_WORKSPACE/.github/patches/xiaomi_compat.sh
 
-        cp $GITHUB_WORKSPACE/.github/patches/hmbird_patch.c drivers/misc/hmbird_patch.c || true
+        cp $GITHUB_WORKSPACE/.github/patches/hmbird_patch.c drivers/misc/hmbird_patch.c
 
         if ! grep -q "hmbird_patch.o" drivers/misc/Makefile; then
           echo "obj-y += hmbird_patch.o" >> drivers/misc/Makefile
