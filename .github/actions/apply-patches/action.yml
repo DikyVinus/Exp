@@ -40,142 +40,211 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Set Variables
+
+    # =========================
+    # ROOT VARIANT (SUBMODULE BASED)
+    # =========================
+    - name: Apply Root Variant
       shell: bash
       working-directory: ${{ env.SRC_DIR }}
       run: |
+        set -euo pipefail
+
         VERSION="${{ inputs.kernel_version }}"
-        if [ "$VERSION" == "6.1" ]; then
-          SUS_BRANCH="gki-android14-6.1"
-          ANDR_VER="android14"
-        elif [ "$VERSION" == "6.6" ]; then
-          SUS_BRANCH="gki-android15-6.6"
-          ANDR_VER="android15"
-        elif [ "$VERSION" == "5.10" ]; then
-          SUS_BRANCH="gki-android12-5.10"
-          ANDR_VER="android12"
-        elif [ "$VERSION" == "4.19" ]; then
-          SUS_BRANCH="gki-android12-5.10" # Default 4.19 logic handles it manually
-          ANDR_VER="android12"
-        fi
-        echo "SUS_BRANCH=$SUS_BRANCH" >> $GITHUB_ENV
-        echo "ANDR_VER=$ANDR_VER" >> $GITHUB_ENV
-        SUBLEVEL=$(make -s -C ${{ env.SRC_DIR }} kernelversion | cut -d'.' -f3 | cut -d'-' -f1)
-        echo "SUBLEVEL=$SUBLEVEL" >> $GITHUB_ENV
-
-    - name: Apply Root Variant & SuSFS
-      shell: bash
-      working-directory: ${{ env.SRC_DIR }}
-      run: |
         ROOT_VARIANT="${{ inputs.root_variant }}"
-        HOOK_METHOD="${{ inputs.hook_method }}"
+        BASE="$GITHUB_WORKSPACE/manager"
+
         DEFCONFIG="arch/arm64/configs/gki_defconfig"
-        [ -f "arch/arm64/configs/rosemary_defconfig" ] && DEFCONFIG="arch/arm64/configs/rosemary_defconfig"
-        [ -f "arch/arm64/configs/gale_defconfig" ] && DEFCONFIG="arch/arm64/configs/gale_defconfig"
+        [ -f arch/arm64/configs/rosemary_defconfig ] && DEFCONFIG="arch/arm64/configs/rosemary_defconfig"
+        [ -f arch/arm64/configs/gale_defconfig ] && DEFCONFIG="arch/arm64/configs/gale_defconfig"
 
-        for KSU_PATH in drivers/staging/kernelsu drivers/kernelsu KernelSU KernelSU-Next; do
-          [ -d $KSU_PATH ] && rm -rf $KSU_PATH
-        done
+        # ---- clean previous
+        rm -rf drivers/staging/kernelsu drivers/kernelsu KernelSU KernelSU-Next 2>/dev/null || true
 
-        if [ "$ROOT_VARIANT" == "KernelSU" ]; then
-          if [ "${{ inputs.kernel_version }}" == "4.19" ]; then
-            curl -LSs "https://raw.githubusercontent.com/xxblebleblexx/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s susfs-rksu-master
-          else
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
+        # ---- resolver (version-aware, no hardcode)
+        resolve_manager() {
+          local name="$1"
+
+          if [ -d "$BASE/${name}-${VERSION}" ]; then
+            echo "$BASE/${name}-${VERSION}"
+            return
           fi
-        elif [ "$ROOT_VARIANT" == "KernelSU-Next" ]; then
-          if [ "${{ inputs.kernel_version }}" == "4.19" ]; then
-            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-          else
-            curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+
+          if [ -d "$BASE/${name}" ]; then
+            echo "$BASE/${name}"
+            return
           fi
-        elif [ "$ROOT_VARIANT" == "KernelSU-Next (All Managers)" ]; then
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-          cd KernelSU-Next && patch -p1 --forward < $GITHUB_WORKSPACE/.github/patches/ksun-add-more-managers-support.patch || true && cd ..
-        elif [ "$ROOT_VARIANT" == "Rissu (MamboSU)" ]; then
-          curl -LSs "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/susfs-mambo-master/kernel/setup.sh" | bash -s susfs-mambo-master
-        elif [ "$ROOT_VARIANT" == "ResukiSU" ]; then
-          curl -LSs "https://raw.githubusercontent.com/Kingfinik98/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
-        elif [ "$ROOT_VARIANT" == "Wild KSU" ]; then
-          curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
-        fi
 
-        if [[ "$ROOT_VARIANT" != "Vanilla" ]]; then
-          sed -i 's/$(error KSU requires Kprobes; enable it (defconfig))/# $(error KSU requires Kprobes; enable it (defconfig))/' drivers/kernelsu/Kbuild || true
-        fi
+          echo ""
+        }
 
-        if [ "$HOOK_METHOD" == "susfs" ] || [ "$ROOT_VARIANT" == "ResukiSU" ]; then
-          if [ "${{ inputs.kernel_version }}" != "4.19" ]; then
-             susfs=$GITHUB_WORKSPACE/.github/patches/susfs4ksu/${{ env.SUS_BRANCH }}
-             if [ -d "$susfs" ]; then
-               cp -r $susfs/fs . && cp -r $susfs/include . && cp -r $susfs/50_add_susfs_in_${{ env.SUS_BRANCH }}.patch .
-               patch -p1 --forward --fuzz=3 < 50_add_susfs_in_${{ env.SUS_BRANCH }}.patch || true
-             fi
-          elif [[ "${{ inputs.kernel_version }}" == "4.19" ]]; then
-              if [[ "$DEFCONFIG" == *"gale"* ]]; then
-                  patch -p1 --forward --fuzz=3 < $GITHUB_WORKSPACE/.github/patches/susfs4ksu/4.19/gale/susfs_gale.patch || true
-              fi
+        install_manager() {
+          local path="$1"
+          local arg="$2"
+
+          [ -z "$path" ] && return
+
+          if [ -f "$path/kernel/setup.sh" ]; then
+            bash "$path/kernel/setup.sh" "$arg"
           fi
+        }
+
+        # =========================
+        # ROOT SELECTION
+        # =========================
+        case "$ROOT_VARIANT" in
+          KernelSU)
+            MGR=$(resolve_manager "KernelSU")
+            [ "$VERSION" = "4.19" ] && install_manager "$MGR" "susfs-rksu-master" || install_manager "$MGR" "main"
+            ;;
+
+          KernelSU-Next)
+            MGR=$(resolve_manager "KernelSU-Next")
+            [ "$VERSION" = "4.19" ] && install_manager "$MGR" "legacy" || install_manager "$MGR" "dev-susfs"
+            ;;
+
+          "KernelSU-Next (All Managers)")
+            MGR=$(resolve_manager "KernelSU-Next")
+            install_manager "$MGR" "dev-susfs"
+            (cd KernelSU-Next && patch -p1 --forward < "$GITHUB_WORKSPACE/.github/patches/ksun-add-more-managers-support.patch" || true)
+            ;;
+
+          "Rissu (MamboSU)")
+            MGR=$(resolve_manager "Rissu")
+            install_manager "$MGR" "susfs-mambo-master"
+            ;;
+
+          ResukiSU)
+            MGR=$(resolve_manager "ResukiSU")
+            install_manager "$MGR" "main"
+            ;;
+
+          "Wild KSU")
+            MGR=$(resolve_manager "Wild_KSU")
+            install_manager "$MGR" "wild"
+            ;;
+        esac
+
+        # =========================
+        # BASIC KSU FIX
+        # =========================
+        if [ "$ROOT_VARIANT" != "Vanilla" ]; then
+          sed -i 's/$(error KSU requires Kprobes; enable it (defconfig))/# disabled/' drivers/kernelsu/Kbuild || true
         fi
 
-        if [[ "$ROOT_VARIANT" != "Vanilla" ]]; then
-          echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KPM=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> $DEFCONFIG
-          echo "CONFIG_KSU_SYSCALL_HOOK=n" >> $DEFCONFIG
-          echo "CONFIG_KPROBES=y" >> $DEFCONFIG
-          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
-          echo "CONFIG_OVERLAY_FS=y" >> $DEFCONFIG
+        # =========================
+        # DEFCONFIG BASE (NO HOOKS YET)
+        # =========================
+        if [ "$ROOT_VARIANT" != "Vanilla" ]; then
+          cat >> "$DEFCONFIG" <<EOF
+CONFIG_KSU=y
+CONFIG_KPM=y
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_KSU_SYSCALL_HOOK=n
+CONFIG_KSU_SUSFS_SUS_SU=n
+EOF
         fi
 
-        if [ "$HOOK_METHOD" == "susfs" ] || [ "$ROOT_VARIANT" == "ResukiSU" ]; then
-          echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_MANUAL_HOOK=n" >> $DEFCONFIG
-          echo "CONFIG_KSU_HAS_MANUAL_HOOK=n" >> $DEFCONFIG
-        fi
-
-        if [ "$ROOT_VARIANT" == "KernelSU" ] || [ "$ROOT_VARIANT" == "KernelSU-Next" ] || [ "$ROOT_VARIANT" == "KernelSU-Next (All Managers)" ]; then
-            sed -i 's/#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME/#if 0 \/\* CONFIG_KSU_SUSFS_SPOOF_UNAME Disabled to fix build \*\//' drivers/kernelsu/supercalls.c || true
-        fi
-
-        # Extract KSU Versions to avoid Bazel git lookup failure
+        # =========================
+        # VERSION EXTRACTION (STABLE)
+        # =========================
         if [ -d "KernelSU-Next" ]; then
           cd KernelSU-Next
-          KSU_VERSION_TAG=$(git describe --tags --always | sed 's/^v//')
-          KSU_OFFSET=$(grep -oP 'expr \K[0-9]+' kernel/Kbuild | head -n 1 || echo 10200)
-          KSU_VERSION=$(expr $(git rev-list --count HEAD) "+" $KSU_OFFSET)
+          TAG=$(git describe --tags --always | sed 's/^v//')
+          OFFSET=$(grep -oP 'expr \K[0-9]+' kernel/Kbuild | head -n1 || echo 10200)
+          COUNT=$(git rev-list --count HEAD)
+          VERSION_CODE=$((COUNT + OFFSET))
           cd ..
-          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${KSU_VERSION}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${KSU_VERSION_TAG}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${KSU_VERSION}|" drivers/kernelsu/Kbuild || true
+
+          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
+          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${TAG}|" drivers/kernelsu/Kbuild || true
+          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
+
         elif [ -d "KernelSU" ]; then
           cd KernelSU
-          KSU_VERSION_TAG=$(git describe --tags --always | sed 's/^v//')
-          KSU_OFFSET=$(grep -oP 'expr \K[0-9]+' kernel/Kbuild | head -n 1 || echo 10200)
-          KSU_VERSION=$(expr $(git rev-list --count HEAD) "+" $KSU_OFFSET)
+          TAG=$(git describe --tags --always | sed 's/^v//')
+          OFFSET=$(grep -oP 'expr \K[0-9]+' kernel/Kbuild | head -n1 || echo 10200)
+          COUNT=$(git rev-list --count HEAD)
+          VERSION_CODE=$((COUNT + OFFSET))
           cd ..
-          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${KSU_VERSION}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${KSU_VERSION_TAG}|" drivers/kernelsu/Kbuild || true
-          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${KSU_VERSION}|" drivers/kernelsu/Kbuild || true
+
+          sed -i "s|KSU_VERSION_FALLBACK :=.*|KSU_VERSION_FALLBACK := ${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
+          sed -i "s|KSU_VERSION_TAG_FALLBACK :=.*|KSU_VERSION_TAG_FALLBACK := ${TAG}|" drivers/kernelsu/Kbuild || true
+          sed -i "s|ccflags-y += -DKSU_VERSION=.*|ccflags-y += -DKSU_VERSION=${VERSION_CODE}|" drivers/kernelsu/Kbuild || true
         fi
 
-    - name: Apply BBG
+        # =========================
+        # HOOKS (SUSFS)
+        # =========================
+        if [ "$HOOK_METHOD" = "susfs" ] || [ "$ROOT_VARIANT" = "ResukiSU" ]; then
+
+          PATCH_ROOT="$GITHUB_WORKSPACE/.github/patches"
+
+          case "$VERSION" in
+            4.19)
+              if [[ "$DEFCONFIG" == *"gale"* ]]; then
+                patch -p1 --forward --fuzz=3 < "$PATCH_ROOT/susfs4ksu/4.19/gale/susfs_gale.patch" || true
+              fi
+              ;;
+
+            5.10) SUS_DIR="gki-android12-5.10" ;;
+            6.1)  SUS_DIR="gki-android14-6.1" ;;
+            6.6)  SUS_DIR="gki-android15-6.6" ;;
+          esac
+
+          if [ "$VERSION" != "4.19" ]; then
+            SUS_BASE="$PATCH_ROOT/susfs4ksu/$SUS_DIR"
+
+            if [ -d "$SUS_BASE" ]; then
+              cp -r "$SUS_BASE/fs" . 2>/dev/null || true
+              cp -r "$SUS_BASE/include" . 2>/dev/null || true
+
+              find "$SUS_BASE" -type f -name "*.patch" | sort | while read p; do
+                patch -p1 --forward --fuzz=3 < "$p" || true
+              done
+            fi
+          fi
+        fi
+
+        # =========================
+        # DEFCONFIG (SUSFS FLAGS)
+        # =========================
+        if [ "$HOOK_METHOD" = "susfs" ] || [ "$ROOT_VARIANT" = "ResukiSU" ]; then
+          cat >> "$DEFCONFIG" <<EOF
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_KSU_MANUAL_HOOK=n
+CONFIG_KSU_HAS_MANUAL_HOOK=n
+EOF
+        fi
+
+        # =========================
+        # BUILD FIX (KSU NEXT / KSU)
+        # =========================
+        case "$ROOT_VARIANT" in
+          KernelSU|KernelSU-Next|"KernelSU-Next (All Managers)")
+            sed -i 's/#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME/#if 0/' drivers/kernelsu/supercalls.c || true
+            ;;
+        esac
+
+        - name: Apply BBG
       if: inputs.apply_bbg == 'Yes'
       uses: ./.github/actions/bbg
 
@@ -184,51 +253,77 @@ runs:
       shell: bash
       working-directory: ${{ env.SRC_DIR }}
       run: |
-        DEFCONFIG="arch/arm64/configs/gki_defconfig"
-        [ -f "arch/arm64/configs/rosemary_defconfig" ] && DEFCONFIG="arch/arm64/configs/rosemary_defconfig"
-        [ -f "arch/arm64/configs/gale_defconfig" ] && DEFCONFIG="arch/arm64/configs/gale_defconfig"
+        set -euo pipefail
 
-        echo "CONFIG_VIRTUALIZATION=y" >> $DEFCONFIG
-        echo "CONFIG_KVM=m" >> $DEFCONFIG
-        echo "CONFIG_KVM_ARM_HOST=y" >> $DEFCONFIG
-        echo "CONFIG_KVM_ARM_TIMER=y" >> $DEFCONFIG
-        echo "CONFIG_KVM_ARM_VGIC=y" >> $DEFCONFIG
-        echo "CONFIG_KVM_ARM_VGIC_V3=y" >> $DEFCONFIG
-        echo "CONFIG_KVM_ARM_PMU=y" >> $DEFCONFIG
-        echo "CONFIG_KVM_VFIO=y" >> $DEFCONFIG
-        echo "CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT=y" >> $DEFCONFIG
+        DEFCONFIG="arch/arm64/configs/gki_defconfig"
+        [ -f arch/arm64/configs/rosemary_defconfig ] && DEFCONFIG="arch/arm64/configs/rosemary_defconfig"
+        [ -f arch/arm64/configs/gale_defconfig ] && DEFCONFIG="arch/arm64/configs/gale_defconfig"
+
+        cat >> "$DEFCONFIG" <<EOF
+CONFIG_VIRTUALIZATION=y
+CONFIG_KVM=m
+CONFIG_KVM_ARM_HOST=y
+CONFIG_KVM_ARM_TIMER=y
+CONFIG_KVM_ARM_VGIC=y
+CONFIG_KVM_ARM_VGIC_V3=y
+CONFIG_KVM_ARM_PMU=y
+CONFIG_KVM_VFIO=y
+CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT=y
+EOF
+
         echo "arch/arm64/kvm/kvm.ko" >> android/gki_aarch64_modules
-        if [[ -f modules.bzl ]]; then
+
+        if [ -f modules.bzl ]; then
           sed -i '/COMMON_GKI_MODULES_LIST = \[/a\    "arch/arm64/kvm/kvm.ko",' modules.bzl || true
           sed -i '/_COMMON_GKI_MODULES_LIST = \[/a\    "arch/arm64/kvm/kvm.ko",' modules.bzl || true
         fi
 
 
-    - name: Categorized Patches
+    # =========================
+    # PATCH ENGINE (FULL)
+    # =========================
+    - name: Apply Categorized Patches
       shell: bash
       working-directory: ${{ env.SRC_DIR }}
       run: |
-        KERNEL_VERSION="${{ inputs.kernel_version }}"
+        set -euo pipefail
 
-        apply_category() {
-          local CATEGORY=$1
-          local SHOULD_APPLY=$2
+        VERSION="${{ inputs.kernel_version }}"
+        PATCH_ROOT="$GITHUB_WORKSPACE/.github/patches"
 
-          if [ "$SHOULD_APPLY" == "Yes" ]; then
-            PATCH_DIR="$GITHUB_WORKSPACE/.github/patches/$KERNEL_VERSION/$CATEGORY"
-            if [ -d "$PATCH_DIR" ] && [ "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
-              echo "🧪 Applying $CATEGORY patches..."
-              for patch_file in "$PATCH_DIR"/*.patch; do
-                if [ -f "$patch_file" ]; then
-                  if patch -p1 --forward < "$patch_file" > /dev/null 2>&1; then
-                    echo "  ✅ Applied: $(basename "$patch_file")"
-                  else
-                    echo "  ❌ Failed: $(basename "$patch_file")"
-                  fi
-                fi
+        run_item() {
+          local item="$1"
+
+          if [ -f "$item" ]; then
+            case "$item" in
+              *.patch) patch -p1 --forward --fuzz=3 < "$item" || true ;;
+              *.sh) bash "$item" || true ;;
+            esac
+          fi
+
+          if [ -d "$item" ]; then
+            if [ -f "$item/apply.sh" ]; then
+              bash "$item/apply.sh" || true
+            else
+              find "$item" -type f \( -name "*.patch" -o -name "*.sh" \) | sort | while read f; do
+                run_item "$f"
               done
             fi
           fi
+        }
+
+        apply_category() {
+          local CATEGORY="$1"
+          local ENABLE="$2"
+
+          [ "$ENABLE" != "Yes" ] && return
+
+          BASE="$PATCH_ROOT/$VERSION/$CATEGORY"
+          [ ! -d "$BASE" ] && return
+
+          find "$BASE" -mindepth 1 | sort | while read item; do
+            run_item "$item"
+          done
         }
 
         apply_category "cpu_scheduler" "${{ inputs.apply_cpu_scheduler_patches }}"
@@ -237,51 +332,108 @@ runs:
         apply_category "network" "${{ inputs.apply_network_patches }}"
         apply_category "power_management" "${{ inputs.apply_power_management_patches }}"
         apply_category "misc" "${{ inputs.apply_misc_patches }}"
-        apply_category "other" "${{ inputs.apply_other_patches }}"
 
-        if [ "${{ inputs.performance_patch }}" == "Snapdragon" ]; then
-          echo "🚀 Applying qcom-cpufreq-hw..."
-          cp $GITHUB_WORKSPACE/.github/patches/qcom-cpufreq-hw.c drivers/cpufreq/qcom-cpufreq-hw.c
-        fi
 
-        if [ "${{ inputs.apply_zram_enhance }}" == "Yes" ]; then
-          echo "⚙️ Applying advanced ZRAM (LZ4 NEON) Patches..."
-          cp $GITHUB_WORKSPACE/.github/patches/zzh_patches/zram/include/linux/lz4.h ./include/linux/lz4.h || true
-          cp -r $GITHUB_WORKSPACE/.github/patches/zzh_patches/zram/lz4/* ./lib/lz4/ || true
-          echo "⚙️ Running LZ4 NEON dynamic patching..."
-          bash $GITHUB_WORKSPACE/.github/patches/zzh_patches/zram/apply_lz4_neon.sh || true
-          cat $GITHUB_WORKSPACE/.github/patches/zzh_patches/config/zram.config >> arch/arm64/configs/gki_defconfig || true
-          if [ -f "modules.bzl" ]; then
-             sed -i 's/"drivers\/block\/zram\/zram\.ko",//g; s/"mm\/zsmalloc\.ko",//g' modules.bzl || true
+    # =========================
+    # OTHER PATCHES (SEPARATE TOGGLE)
+    # =========================
+    - name: Apply Other Patches
+      if: inputs.apply_other_patches == 'Yes'
+      shell: bash
+      working-directory: ${{ env.SRC_DIR }}
+      run: |
+        set -euo pipefail
+
+        PATCH_ROOT="$GITHUB_WORKSPACE/.github/patches"
+
+        run_item() {
+          local item="$1"
+
+          if [ -f "$item" ]; then
+            case "$item" in
+              *.patch) patch -p1 --forward --fuzz=3 < "$item" || true ;;
+              *.sh) bash "$item" || true ;;
+            esac
           fi
+
+          if [ -d "$item" ]; then
+            if [ -f "$item/apply.sh" ]; then
+              bash "$item/apply.sh" || true
+            else
+              find "$item" -type f \( -name "*.patch" -o -name "*.sh" \) | sort | while read f; do
+                run_item "$f"
+              done
+            fi
+          fi
+        }
+
+        find "$PATCH_ROOT" -maxdepth 1 -mindepth 1 \
+          ! -name "susfs4ksu" \
+          ! -name "zzh_patches" \
+          ! -name "$VERSION" \
+          | sort | while read item; do
+            run_item "$item"
+          done
+
+
+    # =========================
+    # PERFORMANCE PATCH
+    # =========================
+    - name: Apply Performance Patch
+      shell: bash
+      working-directory: ${{ env.SRC_DIR }}
+      run: |
+        if [ "${{ inputs.performance_patch }}" = "Snapdragon" ]; then
+          cp $GITHUB_WORKSPACE/.github/patches/qcom-cpufreq-hw.c drivers/cpufreq/qcom-cpufreq-hw.c || true
         fi
+
+
+    # =========================
+    # ZRAM
+    # =========================
+    - name: Apply ZRAM Enhance
+      if: inputs.apply_zram_enhance == 'Yes'
+      shell: bash
+      working-directory: ${{ env.SRC_DIR }}
+      run: |
+        set -euo pipefail
+
+        BASE="$GITHUB_WORKSPACE/.github/patches/zzh_patches/zram"
+
+        cp "$BASE/include/linux/lz4.h" ./include/linux/lz4.h || true
+        cp -r "$BASE/lz4/"* ./lib/lz4/ || true
+
+        bash "$BASE/apply_lz4_neon.sh" || true
+
+        cat "$GITHUB_WORKSPACE/.github/patches/zzh_patches/config/zram.config" >> arch/arm64/configs/gki_defconfig || true
+
+        if [ -f modules.bzl ]; then
+          sed -i 's/"drivers\/block\/zram\/zram\.ko",//g; s/"mm\/zsmalloc\.ko",//g' modules.bzl || true
+        fi
+
+
+    # =========================
+    # DEVICE FIXES
+    # =========================
     - name: Device Specific Fixes
       if: inputs.apply_device_fixes == 'Yes'
       shell: bash
       working-directory: ${{ env.SRC_DIR }}
       run: |
-        if [ "${{ inputs.kernel_version }}" == "6.6" ]; then
-          echo "⚙️ Applying Samsung & Xiaomi 6.6 ABI fixes..."
-          SYMBOL_LIST=android/abi_gki_aarch64_galaxy
-          echo "kdp_set_cred_non_rcu" >> $SYMBOL_LIST
-          echo "kdp_usecount_dec_and_test" >> $SYMBOL_LIST
-          echo "kdp_usecount_inc" >> $SYMBOL_LIST
-          PATCH="$GITHUB_WORKSPACE/.github/patches/samsung/min_kdp/add-min_kdp-symbols.patch"
-          patch -p1 --forward < "$PATCH" > /dev/null 2>&1 || true
-          cp "$GITHUB_WORKSPACE/.github/patches/samsung/min_kdp/min_kdp.c" drivers/min_kdp.c
-          echo "obj-y += min_kdp.o" >> drivers/Makefile
-          echo "device_find_any_child" >> android/abi_gki_aarch64_xiaomi
-        fi
+        set -euo pipefail
 
-        echo "⚙️ Applying Xiaomi Compat Fix..."
         bash $GITHUB_WORKSPACE/.github/patches/xiaomi_compat.sh || true
 
-        echo "🐦 Applying OPLUS HMBird Patch..."
         cp $GITHUB_WORKSPACE/.github/patches/hmbird_patch.c drivers/misc/hmbird_patch.c || true
+
         if ! grep -q "hmbird_patch.o" drivers/misc/Makefile; then
           echo "obj-y += hmbird_patch.o" >> drivers/misc/Makefile
         fi
 
+
+    # =========================
+    # EXTERNAL ACTIONS
+    # =========================
     - name: Apply vTomsonek
       if: inputs.apply_vtomsonek == 'Yes'
       uses: ./.github/actions/vtomsonek
@@ -295,6 +447,10 @@ runs:
       if: inputs.apply_hakan == 'Yes'
       uses: ./.github/actions/hakan
 
+
+    # =========================
+    # FINAL PERF TWEAK
+    # =========================
     - name: Defconfig Performance Tweaks
       if: inputs.apply_cpu_scheduler_patches == 'Yes'
       shell: bash
