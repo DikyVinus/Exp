@@ -25,7 +25,7 @@ jobs:
       - run: |
           git rm -r src || true
 
-      - name: Ensure submodules (hardened)
+      - name: Ensure submodules (hardened + branch-safe)
         shell: bash
         run: |
           set -euo pipefail
@@ -35,23 +35,28 @@ jobs:
             local url="$2"
             local branch="$3"
 
-            # Case 1: valid submodule
+            # Already valid submodule
             if git submodule status "$path" >/dev/null 2>&1; then
               echo "valid: $path"
               return
             fi
 
-            # Case 2: broken directory (exists but not submodule)
+            # Broken directory cleanup
             if [ -d "$path" ]; then
               echo "fixing broken dir: $path"
               rm -rf "$path"
               git rm -r --cached "$path" 2>/dev/null || true
             fi
 
-            # Add fresh
             echo "adding: $path"
+
             if [ -n "$branch" ]; then
-              git submodule add --depth=1 -b "$branch" "$url" "$path"
+              # Branch-safe add (no --depth here)
+              git submodule add -b "$branch" "$url" "$path"
+
+              # Then shallow manually
+              git -C "$path" fetch origin "$branch" --depth=1
+              git -C "$path" checkout "$branch"
             else
               git submodule add --depth=1 "$url" "$path"
             fi
@@ -80,7 +85,7 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --recursive --depth=1
 
-      - name: Optional: lock to remote (controlled)
+      - name: Optional: update to latest remote
         run: |
           set -euo pipefail
           git submodule update --remote --recursive || true
@@ -90,7 +95,7 @@ jobs:
           set -e
           if ! git diff --quiet || ! git diff --cached --quiet; then
             git add .gitmodules kernel manager
-            git commit -m "Sync submodules (hardened, self-healing)"
+            git commit -m "Sync submodules (branch-safe, self-healing)"
             git push
           else
             echo "No changes"
