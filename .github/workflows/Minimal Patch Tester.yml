@@ -34,8 +34,6 @@ jobs:
                 *.sh)
                   bash "$item" > /dev/null 2>&1 || true
                   ;;
-                *)
-                  ;;
               esac
             fi
 
@@ -48,6 +46,15 @@ jobs:
                 done
               fi
             fi
+          }
+
+          run_susfs() {
+            case "$1" in
+              4.19) run_item "../../.github/patches/susfs4ksu/4.19" ;;
+              5.10) run_item "../../.github/patches/susfs4ksu/gki-android12-5.10" ;;
+              6.1)  run_item "../../.github/patches/susfs4ksu/gki-android14-6.1" ;;
+              6.6)  run_item "../../.github/patches/susfs4ksu/gki-android15-6.6" ;;
+            esac
           }
 
           for version in 4.19 5.10 6.1 6.6; do
@@ -102,6 +109,22 @@ jobs:
             done
 
             echo "" >> ../../summary.log
+            echo "SUSFS" >> ../../summary.log
+
+            run_susfs "$version"
+
+            if find . -name "*.rej" | grep -q .; then
+              echo "FAIL susfs" >> ../../summary.log
+              find . -name "*.rej" -exec cat {} \; >> ../../summary.log
+              find . -name "*.rej" -delete
+            else
+              echo "OK susfs" >> ../../summary.log
+            fi
+
+            git reset --hard HEAD >/dev/null
+            git clean -fd >/dev/null
+
+            echo "" >> ../../summary.log
             echo "PATCH GROUPS" >> ../../summary.log
 
             BASE="../../.github/patches/$version"
@@ -134,7 +157,11 @@ jobs:
 
             BASE="../../.github/patches"
 
-            find "$BASE" -maxdepth 1 | while read item; do
+            find "$BASE" -mindepth 1 -maxdepth 1 | while read item; do
+              name=$(basename "$item")
+              if [ "$name" = "anykernel3" ]; then
+                continue
+              fi
               run_item "$item"
             done
 
