@@ -1,0 +1,64 @@
+name: Setup Submodules (kernels + managers)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Configure git
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Clean old layout
+        run: |
+          git rm -r src || true
+          rm -rf kernel manager
+
+      # ---------------- KERNELS ----------------
+      - name: Add kernel submodules
+        run: |
+          set -e
+          git submodule add --depth=1 -b android14-6.1 https://github.com/ramabondanp/android_kernel_common-6.1.git kernel/6.1
+          git submodule add --depth=1 -b android15-6.6 https://github.com/ramabondanp/android_kernel_common-6.6.git kernel/6.6
+          git submodule add --depth=1 -b chihiro-rebase https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git kernel/5.10
+          git submodule add --depth=1 -b cip https://github.com/Mayuri-Chan/android_kernel_xiaomi_gale.git kernel/4.19
+
+      # ---------------- MANAGERS (FULLY DISAMBIGUATED) ----------------
+      - name: Add manager submodules
+        run: |
+          set -e
+
+          # KernelSU
+          git submodule add --depth=1 https://github.com/tiann/KernelSU.git manager/kernelsu-main
+          git submodule add --depth=1 https://github.com/xxblebleblexx/KernelSU.git manager/kernelsu-4.19
+
+          # KernelSU-Next
+          git submodule add --depth=1 -b dev-susfs https://github.com/pershoot/KernelSU-Next.git manager/kernelsu-next-dev-susfs
+          git submodule add --depth=1 -b next https://github.com/KernelSU-Next/KernelSU-Next.git manager/kernelsu-next-legacy-4.19
+
+          # Rissu (MamboSU)
+          git submodule add --depth=1 -b susfs-mambo-master https://github.com/RapliVx/KernelSU.git manager/mambo-susfs
+
+          # ResukiSU
+          git submodule add --depth=1 https://github.com/Kingfinik98/ReSukiSU.git manager/resukisu-main
+
+          # Wild KSU
+          git submodule add --depth=1 -b wild https://github.com/WildKernels/Wild_KSU.git manager/wild-ksu
+
+      - name: Commit and push
+        run: |
+          git add .gitmodules
+          git commit -m "Replace stubs with kernel + manager submodules (versioned, branch-aligned)"
+          git push
