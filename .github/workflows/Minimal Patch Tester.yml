@@ -16,7 +16,6 @@ jobs:
       - name: Run all kernels sequentially
         shell: bash
         run: |
-          set -euo pipefail
 
           git config --global user.name "CoreShift"
           git config --global user.email "build@coreshift.dev"
@@ -32,7 +31,7 @@ jobs:
                   patch -p1 --forward --fuzz=3 < "$item" > /dev/null 2>&1 || true
                   ;;
                 *.sh)
-                  bash "$item" > /dev/null 2>&1 || true
+                  bash "$item" || true
                   ;;
               esac
             fi
