@@ -38,7 +38,8 @@ jobs:
         run: |
           set -e
 
-          if [ "${{ inputs.kernel }}" = "all" ]; then
+          KERNEL="${{ inputs.kernel }}"
+if [ "$KERNEL" = "all" ]; then
             git submodule update --init --recursive
           else
             git submodule update --init src/${{ inputs.kernel }}
