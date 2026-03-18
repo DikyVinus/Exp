@@ -113,7 +113,7 @@ runs:
              fi
           elif [[ "${{ inputs.kernel_version }}" == "4.19" ]]; then
               if [[ "$DEFCONFIG" == *"gale"* ]]; then
-                  patch -p1 --forward --fuzz=3 < $GITHUB_WORKSPACE/.github/patches/susfs_gale.patch || true
+                  patch -p1 --forward --fuzz=3 < $GITHUB_WORKSPACE/.github/patches/susfs4ksu/4.19/gale/susfs_gale.patch || true
               fi
           fi
         fi
@@ -260,11 +260,6 @@ runs:
       shell: bash
       working-directory: ${{ env.SRC_DIR }}
       run: |
-        if [ "${{ inputs.performance_patch }}" == "MediaTek" ] || [ "${{ inputs.performance_patch }}" == "Universal" ]; then
-          echo "📸 Applying Infinix GT 20 Pro Camera Fix..."
-          patch -p1 --forward < $GITHUB_WORKSPACE/.github/patches/infinix_cam.patch > /dev/null 2>&1 || echo "Camera patch is embedded"
-        fi
-
         if [ "${{ inputs.kernel_version }}" == "6.6" ]; then
           echo "⚙️ Applying Samsung & Xiaomi 6.6 ABI fixes..."
           SYMBOL_LIST=android/abi_gki_aarch64_galaxy
