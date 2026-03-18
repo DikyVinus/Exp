@@ -113,7 +113,7 @@ runs:
              fi
           elif [[ "${{ inputs.kernel_version }}" == "4.19" ]]; then
               if [[ "$DEFCONFIG" == *"gale"* ]]; then
-                  patch -p1 --forward --fuzz=3 < $GITHUB_WORKSPACE/.github/patches/susfs4ksu/susfs_gale.patch || true
+                  patch -p1 --forward --fuzz=3 < $GITHUB_WORKSPACE/.github/patches/susfs4ksu/4.19/gale/susfs_gale.patch || true
               fi
           fi
         fi
