@@ -1,29 +1,19 @@
-Cleaned, deterministic, adds:
-
-mode switch: single version vs all
-
-hard failure aggregation (no silent success)
-
-clear error output
-
-proper exit at end
-
-no duplicate manager runs
-
-consistent patch traversal
-
-
 name: Minimal Patch Tester
 
 on:
   workflow_dispatch:
     inputs:
       kernel:
-        description: "Kernel version (or 'all')"
+        description: "Kernel version or 'all'"
+        required: true
         default: "all"
+        type: string
       fail_fast:
         description: "Stop on first failure"
+        required: true
         default: "false"
+        type: choice
+        options: ["true", "false"]
 
 jobs:
   test:
@@ -38,7 +28,7 @@ jobs:
       - name: Run tester
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
           git config --global user.name "CoreShift"
           git config --global user.email "build@coreshift.dev"
@@ -47,11 +37,12 @@ jobs:
           > "$SUMMARY"
 
           FAIL_COUNT=0
+          FAIL_FAST="${{ inputs.fail_fast }}"
 
           fail() {
             echo "FAIL $1" >> "$SUMMARY"
             FAIL_COUNT=$((FAIL_COUNT+1))
-            [ "${{ inputs.fail_fast }}" = "true" ] && exit 1
+            if [ "$FAIL_FAST" = "true" ]; then exit 1; fi
           }
 
           ok() {
@@ -59,7 +50,7 @@ jobs:
           }
 
           check_rejects() {
-            if find . -name "*.rej" | grep -q .; then
+            if find . -name "*.rej" -print -quit | grep -q .; then
               find . -name "*.rej" -exec cat {} \; >> "../../$SUMMARY"
               find . -name "*.rej" -delete
               return 1
@@ -67,42 +58,89 @@ jobs:
             return 0
           }
 
+          apply_patch() {
+            local p="$1"
+            patch -p1 --forward --fuzz=3 < "$p" >/dev/null 2>&1
+          }
+
+          run_file() {
+            local f="$1"
+
+            case "$f" in
+              *.patch)
+                apply_patch "$f" || return 1
+                ;;
+              *.sh)
+                bash "$f" >/dev/null 2>&1 || return 1
+                ;;
+            esac
+          }
+
+          run_dir() {
+            local d="$1"
+
+            if [ -f "$d/apply.sh" ]; then
+              bash "$d/apply.sh" >/dev/null 2>&1 || return 1
+              return 0
+            fi
+
+            # deterministic: depth-first, sorted
+            while IFS= read -r f; do
+              run_file "$f" || return 1
+            done < <(find "$d" -type f \( -name "*.patch" -o -name "*.sh" \) | sort)
+
+            return 0
+          }
+
           run_item() {
             local item="$1"
 
             if [ -f "$item" ]; then
-              case "$item" in
-                *.patch) patch -p1 --forward --fuzz=3 < "$item" || true ;;
-                *.sh) bash "$item" || true ;;
-              esac
-            fi
-
-            if [ -d "$item" ]; then
-              if [ -f "$item/apply.sh" ]; then
-                bash "$item/apply.sh" || true
-              else
-                find "$item" -type f \( -name "*.patch" -o -name "*.sh" \) | sort | while read f; do
-                  run_item "$f"
-                done
-              fi
+              run_file "$item" || return 1
+            elif [ -d "$item" ]; then
+              run_dir "$item" || return 1
             fi
           }
 
           run_susfs() {
-            case "$1" in
-              4.19) run_item "../../.github/patches/susfs4ksu/4.19" ;;
-              5.10) run_item "../../.github/patches/susfs4ksu/gki-android12-5.10" ;;
-              6.1)  run_item "../../.github/patches/susfs4ksu/gki-android14-6.1" ;;
-              6.6)  run_item "../../.github/patches/susfs4ksu/gki-android15-6.6" ;;
+            local v="$1"
+            local BASE="../../.github/patches/susfs4ksu"
+
+            if [ "$v" = "4.19" ]; then
+              run_dir "$BASE/4.19" || return 1
+              return 0
+            fi
+
+            case "$v" in
+              5.10) DIR="$BASE/gki-android12-5.10" ;;
+              6.1)  DIR="$BASE/gki-android14-6.1" ;;
+              6.6)  DIR="$BASE/gki-android15-6.6" ;;
             esac
+
+            [ ! -d "$DIR" ] && return 0
+
+            # copy stage
+            [ -d "$DIR/fs" ] && cp -r "$DIR/fs" . || true
+            [ -d "$DIR/include" ] && cp -r "$DIR/include" . || true
+
+            # strict ordering
+            for p in "$DIR"/50_*.patch; do
+              [ -f "$p" ] && apply_patch "$p" || true
+            done
+
+            while IFS= read -r p; do
+              apply_patch "$p" || return 1
+            done < <(find "$DIR" -type f -name "*.patch" ! -name "50_*" | sort)
+
+            return 0
           }
 
           run_version() {
-            local version="$1"
-            local SRC="src/$version"
+            local v="$1"
+            local SRC="src/$v"
 
             echo "==========================================================" >> "$SUMMARY"
-            echo "SUMMARY FOR $version ($SRC)" >> "$SUMMARY"
+            echo "SUMMARY FOR $v ($SRC)" >> "$SUMMARY"
             echo "==========================================================" >> "$SUMMARY"
             echo "" >> "$SUMMARY"
 
@@ -116,25 +154,26 @@ jobs:
             declare -A seen
             managers=()
 
-            for dir in ../../manager/*; do
-              name=$(basename "$dir")
-              if echo "$name" | grep -q "$version"; then
-                [ -z "${seen[$name]+x}" ] && managers+=("$dir") && seen[$name]=1
+            for d in ../../manager/*; do
+              name=$(basename "$d")
+              if echo "$name" | grep -q "$v"; then
+                [ -z "${seen[$name]+x}" ] && managers+=("$d") && seen[$name]=1
               fi
             done
 
-            for dir in ../../manager/*; do
-              name=$(basename "$dir")
+            for d in ../../manager/*; do
+              name=$(basename "$d")
               if ! echo "$name" | grep -Eq '[0-9]+\.[0-9]+'; then
-                [ -z "${seen[$name]+x}" ] && managers+=("$dir") && seen[$name]=1
+                [ -z "${seen[$name]+x}" ] && managers+=("$d") && seen[$name]=1
               fi
             done
 
-            for manager in "${managers[@]}"; do
-              name=$(basename "$manager")
+            for m in "${managers[@]}"; do
+              name=$(basename "$m")
 
-              [ -f "../../$manager/kernel/setup.sh" ] && \
-                bash "../../$manager/kernel/setup.sh" || true
+              if [ -f "../../$m/kernel/setup.sh" ]; then
+                bash "../../$m/kernel/setup.sh" >/dev/null 2>&1 || fail "$name"
+              fi
 
               if check_rejects; then ok "$name"; else fail "$name"; fi
 
@@ -145,7 +184,7 @@ jobs:
             echo "" >> "../../$SUMMARY"
             echo "SUSFS" >> "../../$SUMMARY"
 
-            run_susfs "$version"
+            run_susfs "$v" || fail "susfs"
 
             if check_rejects; then ok "susfs"; else fail "susfs"; fi
 
@@ -155,21 +194,19 @@ jobs:
             echo "" >> "../../$SUMMARY"
             echo "PATCH GROUPS" >> "../../$SUMMARY"
 
-            BASE="../../.github/patches/$version"
+            BASE="../../.github/patches/$v"
 
             if [ -d "$BASE" ]; then
-              find "$BASE" -mindepth 1 -maxdepth 1 | sort | while read catdir; do
+              while IFS= read -r catdir; do
                 cname=$(basename "$catdir")
 
-                find "$catdir" -mindepth 1 | sort | while read item; do
-                  run_item "$item"
-                done
+                run_dir "$catdir" || fail "category $cname"
 
                 if check_rejects; then ok "category $cname"; else fail "category $cname"; fi
 
                 git reset --hard HEAD >/dev/null
                 git clean -fd >/dev/null
-              done
+              done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d | sort)
             else
               echo "EMPTY patch groups" >> "../../$SUMMARY"
             fi
@@ -177,15 +214,14 @@ jobs:
             echo "" >> "../../$SUMMARY"
             echo "OTHER PATCHES" >> "../../$SUMMARY"
 
-            BASE="../../.github/patches"
-
-            find "$BASE" -mindepth 1 -maxdepth 1 | while read item; do
+            while IFS= read -r item; do
               name=$(basename "$item")
               case "$name" in
-                anykernel3|susfs4ksu|$version) continue ;;
+                anykernel3|susfs4ksu|$v) continue ;;
               esac
-              run_item "$item"
-            done
+
+              run_item "$item" || fail "other:$name"
+            done < <(find ../../.github/patches -mindepth 1 -maxdepth 1 | sort)
 
             if check_rejects; then ok "other"; else fail "other"; fi
 
@@ -206,10 +242,7 @@ jobs:
 
           echo "TOTAL FAILURES: $FAIL_COUNT" >> "$SUMMARY"
 
-          if [ "$FAIL_COUNT" -ne 0 ]; then
-            echo "Patch test failed with $FAIL_COUNT errors"
-            exit 1
-          fi
+          [ "$FAIL_COUNT" -ne 0 ] && exit 1
 
       - name: Upload summary
         uses: actions/upload-artifact@v4
