@@ -1,0 +1,183 @@
+name: Minimal Patch Tester
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-patches:
+    name: Test Kernel Patches & Managers
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel:
+          - version: '6.1'
+            src_path: 'src/6.1/ramabondanp/{source}'
+          - version: '6.6'
+            src_path: 'src/6.6/ramabondanp/{source}'
+          - version: '5.10'
+            src_path: 'src/5.10/MillenniumOSS/{source}'
+          - version: '4.19'
+            src_path: 'src/4.19/Mayuri-Chan/{source}'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Copy Kernel Source
+        shell: bash
+        run: |
+          # Copy the local source directory to the working folder 'kernel'
+          cp -r ${{ matrix.kernel.src_path }} kernel
+          cd kernel
+          git init
+          git config --global user.name "CoreShift"
+          git config --global user.email "build@coreshift.dev"
+          git add .
+          git commit --allow-empty -m "baseline"
+          echo "✅ Prepared ${{ matrix.kernel.version }} kernel from ${{ matrix.kernel.src_path }}"
+
+      - name: Test Managers and Patches
+        shell: bash
+        run: |
+          touch summary.log
+          echo "==========================================================" >> summary.log
+          echo "🚀 SUMMARY FOR ${{ matrix.kernel.version }} (${{ matrix.kernel.src_path }})" >> summary.log
+          echo "==========================================================" >> summary.log
+          echo "" >> summary.log
+
+          managers=(
+            "https://raw.githubusercontent.com/xxblebleblexx/KernelSU/refs/heads/main/kernel/setup.sh susfs-rksu-master"
+            "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh main"
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh legacy"
+            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh dev-susfs"
+            "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/susfs-mambo-master/kernel/setup.sh susfs-mambo-master"
+            "https://raw.githubusercontent.com/Kingfinik98/ReSukiSU/refs/heads/main/kernel/setup.sh main"
+            "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh wild"
+          )
+
+          echo "🧪 TESTING ROOT MANAGERS (setup.sh)" >> summary.log
+          echo "--------------------------------------" >> summary.log
+
+          cd kernel
+          for manager in "${managers[@]}"; do
+            url=$(echo $manager | awk '{print $1}')
+            branch=$(echo $manager | awk '{print $2}')
+
+            echo "Injecting: $url ($branch)"
+            curl -LSs "$url" | bash -s $branch > /dev/null 2>&1 || true
+
+            if find . -name "*.rej" | grep -q .; then
+              echo "❌ FAILED:  $branch" >> ../summary.log
+              find . -name "*.rej" -exec echo "--- {} ---" \; -exec cat {} \; >> ../summary.log
+              find . -name "*.rej" -delete
+            else
+              echo "✅ SUCCESS: $branch" >> ../summary.log
+            fi
+
+            git reset --hard HEAD > /dev/null 2>&1
+            git clean -fd > /dev/null 2>&1
+          done
+
+          echo "" >> ../summary.log
+          echo "🧪 TESTING CATEGORIZED PATCHES" >> ../summary.log
+          echo "--------------------------------------" >> ../summary.log
+
+          CATEGORIES=("memory" "fs" "network" "cpu_scheduler" "power_management" "misc")
+
+          for cat in "${CATEGORIES[@]}"; do
+            echo "Category: $cat"
+            echo "--- Category: $cat ---" >> ../summary.log
+            PATCHES=$(find ../.github/patches/${{ matrix.kernel.version }}/$cat -type f -name "*.patch" 2>/dev/null | sort || true)
+
+            # Apply all patches in the category
+            for patch_file in $PATCHES; do
+              pname=$(basename "$patch_file")
+              echo "Applying: $pname"
+              patch -p1 --forward --fuzz=3 < "$patch_file" > /dev/null 2>&1 || true
+            done
+
+            # Check for any failures after applying the entire category
+            if find . -name "*.rej" | grep -q .; then
+              echo "❌ FAILED:  Category $cat" >> ../summary.log
+              find . -name "*.rej" -exec echo "--- {} ---" \; -exec cat {} \; >> ../summary.log
+              find . -name "*.rej" -delete
+            else
+              # Only mark success if there were actually patches to apply
+              if [ -n "$PATCHES" ]; then
+                echo "✅ SUCCESS: Category $cat" >> ../summary.log
+              else
+                echo "ℹ️ NO PATCHES: Category $cat" >> ../summary.log
+              fi
+            fi
+
+            git reset --hard HEAD > /dev/null 2>&1
+            git clean -fd > /dev/null 2>&1
+          done
+
+          echo "" >> ../summary.log
+          echo "🧪 TESTING OTHER PATCHES (Test/Root)" >> ../summary.log
+          echo "--------------------------------------" >> ../summary.log
+
+          PATCHES=$(find ../.github/test_patches -type f -name "*.patch" 2>/dev/null || true)
+          PATCHES="$PATCHES $(find ../.github/patches -maxdepth 1 -type f -name "*.patch" 2>/dev/null || true)"
+
+          for patch_file in $PATCHES; do
+            pname=$(basename $patch_file)
+            echo "Applying: $pname"
+            patch -p1 --forward --fuzz=3 < "$patch_file" > /dev/null 2>&1 || true
+
+            if find . -name "*.rej" | grep -q .; then
+              echo "❌ FAILED:  $pname" >> ../summary.log
+              find . -name "*.rej" -exec echo "--- {} ---" \; -exec cat {} \; >> ../summary.log
+              find . -name "*.rej" -delete
+            else
+              echo "✅ SUCCESS: $pname" >> ../summary.log
+            fi
+
+            git reset --hard HEAD > /dev/null 2>&1
+            git clean -fd > /dev/null 2>&1
+          done
+
+          cd ..
+          echo "" >> summary.log
+          echo "" >> summary.log
+
+      - name: Upload Summary Log
+        shell: bash
+        run: |
+          mv summary.log summary-${{ matrix.kernel.version }}.log
+
+      - name: Upload Summary Log Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-log-${{ matrix.kernel.version }}
+          path: summary-${{ matrix.kernel.version }}.log
+
+  print-summaries:
+    name: Print Combined Summaries
+    needs: test-patches
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all summaries
+        uses: actions/download-artifact@v4
+        with:
+          path: logs
+          pattern: summary-log-*
+          merge-multiple: true
+
+      - name: Display Master Summary
+        shell: bash
+        run: |
+          echo "=========================================================="
+          echo "              CORESHIFT MASTER TEST SUMMARY               "
+          echo "=========================================================="
+          echo ""
+
+          # Cat all downloaded logs directly to stdout
+          cat logs/*.log 2>/dev/null || echo "No logs found to display."
+
+          echo "=========================================================="
+          echo "                    TEST SUITE COMPLETE                   "
+          echo "=========================================================="
