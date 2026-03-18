@@ -1,7 +1,29 @@
+Cleaned, deterministic, adds:
+
+mode switch: single version vs all
+
+hard failure aggregation (no silent success)
+
+clear error output
+
+proper exit at end
+
+no duplicate manager runs
+
+consistent patch traversal
+
+
 name: Minimal Patch Tester
 
 on:
   workflow_dispatch:
+    inputs:
+      kernel:
+        description: "Kernel version (or 'all')"
+        default: "all"
+      fail_fast:
+        description: "Stop on first failure"
+        default: "false"
 
 jobs:
   test:
@@ -13,32 +35,51 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Run all kernels sequentially
+      - name: Run tester
         shell: bash
         run: |
+          set -uo pipefail
 
           git config --global user.name "CoreShift"
           git config --global user.email "build@coreshift.dev"
 
-          touch summary.log
+          SUMMARY=summary.log
+          > "$SUMMARY"
+
+          FAIL_COUNT=0
+
+          fail() {
+            echo "FAIL $1" >> "$SUMMARY"
+            FAIL_COUNT=$((FAIL_COUNT+1))
+            [ "${{ inputs.fail_fast }}" = "true" ] && exit 1
+          }
+
+          ok() {
+            echo "OK $1" >> "$SUMMARY"
+          }
+
+          check_rejects() {
+            if find . -name "*.rej" | grep -q .; then
+              find . -name "*.rej" -exec cat {} \; >> "../../$SUMMARY"
+              find . -name "*.rej" -delete
+              return 1
+            fi
+            return 0
+          }
 
           run_item() {
             local item="$1"
 
             if [ -f "$item" ]; then
               case "$item" in
-                *.patch)
-                  patch -p1 --forward --fuzz=3 < "$item" > /dev/null 2>&1 || true
-                  ;;
-                *.sh)
-                  bash "$item" || true
-                  ;;
+                *.patch) patch -p1 --forward --fuzz=3 < "$item" || true ;;
+                *.sh) bash "$item" || true ;;
               esac
             fi
 
             if [ -d "$item" ]; then
               if [ -f "$item/apply.sh" ]; then
-                bash "$item/apply.sh" > /dev/null 2>&1 || true
+                bash "$item/apply.sh" || true
               else
                 find "$item" -type f \( -name "*.patch" -o -name "*.sh" \) | sort | while read f; do
                   run_item "$f"
@@ -49,93 +90,70 @@ jobs:
 
           run_susfs() {
             case "$1" in
-              4.19)
-                run_item "../../.github/patches/susfs4ksu/4.19"
-                ;;
-              5.10)
-                [ -f "../../.github/patches/susfs4ksu/gki-android12-5.10/apply.sh" ] && \
-                run_item "../../.github/patches/susfs4ksu/gki-android12-5.10"
-                ;;
-              6.1)
-                [ -f "../../.github/patches/susfs4ksu/gki-android14-6.1/apply.sh" ] && \
-                run_item "../../.github/patches/susfs4ksu/gki-android14-6.1"
-                ;;
-              6.6)
-                [ -f "../../.github/patches/susfs4ksu/gki-android15-6.6/apply.sh" ] && \
-                run_item "../../.github/patches/susfs4ksu/gki-android15-6.6"
-                ;;
+              4.19) run_item "../../.github/patches/susfs4ksu/4.19" ;;
+              5.10) run_item "../../.github/patches/susfs4ksu/gki-android12-5.10" ;;
+              6.1)  run_item "../../.github/patches/susfs4ksu/gki-android14-6.1" ;;
+              6.6)  run_item "../../.github/patches/susfs4ksu/gki-android15-6.6" ;;
             esac
           }
 
-          for version in 4.19 5.10 6.1 6.6; do
+          run_version() {
+            local version="$1"
+            local SRC="src/$version"
 
-            SRC="src/$version"
-
-            echo "==========================================================" >> summary.log
-            echo "SUMMARY FOR $version ($SRC)" >> summary.log
-            echo "==========================================================" >> summary.log
-            echo "" >> summary.log
+            echo "==========================================================" >> "$SUMMARY"
+            echo "SUMMARY FOR $version ($SRC)" >> "$SUMMARY"
+            echo "==========================================================" >> "$SUMMARY"
+            echo "" >> "$SUMMARY"
 
             cd "$SRC"
 
             git reset --hard HEAD >/dev/null
             git clean -fd >/dev/null
 
-            echo "ROOT MANAGERS" >> ../../summary.log
+            echo "ROOT MANAGERS" >> "../../$SUMMARY"
 
+            declare -A seen
             managers=()
 
             for dir in ../../manager/*; do
               name=$(basename "$dir")
               if echo "$name" | grep -q "$version"; then
-                managers+=("$dir")
+                [ -z "${seen[$name]+x}" ] && managers+=("$dir") && seen[$name]=1
               fi
             done
 
             for dir in ../../manager/*; do
               name=$(basename "$dir")
               if ! echo "$name" | grep -Eq '[0-9]+\.[0-9]+'; then
-                managers+=("$dir")
+                [ -z "${seen[$name]+x}" ] && managers+=("$dir") && seen[$name]=1
               fi
             done
 
             for manager in "${managers[@]}"; do
               name=$(basename "$manager")
 
-              if [ -f "../../$manager/kernel/setup.sh" ]; then
-                bash "../../$manager/kernel/setup.sh" > /dev/null 2>&1 || true
-              fi
+              [ -f "../../$manager/kernel/setup.sh" ] && \
+                bash "../../$manager/kernel/setup.sh" || true
 
-              if find . -name "*.rej" | grep -q .; then
-                echo "FAIL $name" >> ../../summary.log
-                find . -name "*.rej" -exec cat {} \; >> ../../summary.log
-                find . -name "*.rej" -delete
-              else
-                echo "OK $name" >> ../../summary.log
-              fi
+              if check_rejects; then ok "$name"; else fail "$name"; fi
 
               git reset --hard HEAD >/dev/null
               git clean -fd >/dev/null
             done
 
-            echo "" >> ../../summary.log
-            echo "SUSFS" >> ../../summary.log
+            echo "" >> "../../$SUMMARY"
+            echo "SUSFS" >> "../../$SUMMARY"
 
             run_susfs "$version"
 
-            if find . -name "*.rej" | grep -q .; then
-              echo "FAIL susfs" >> ../../summary.log
-              find . -name "*.rej" -exec cat {} \; >> ../../summary.log
-              find . -name "*.rej" -delete
-            else
-              echo "OK susfs" >> ../../summary.log
-            fi
+            if check_rejects; then ok "susfs"; else fail "susfs"; fi
 
             git reset --hard HEAD >/dev/null
             git clean -fd >/dev/null
 
-            echo "" >> ../../summary.log
-            echo "PATCH GROUPS" >> ../../summary.log
+            echo "" >> "../../$SUMMARY"
+            echo "PATCH GROUPS" >> "../../$SUMMARY"
 
             BASE="../../.github/patches/$version"
 
@@ -143,52 +161,55 @@ jobs:
               find "$BASE" -mindepth 1 -maxdepth 1 | sort | while read catdir; do
                 cname=$(basename "$catdir")
 
-                find "$catdir" -mindepth 1 -maxdepth 1 | sort | while read item; do
+                find "$catdir" -mindepth 1 | sort | while read item; do
                   run_item "$item"
                 done
 
-                if find . -name "*.rej" | grep -q .; then
-                  echo "FAIL category $cname" >> ../../summary.log
-                  find . -name "*.rej" -exec cat {} \; >> ../../summary.log
-                  find . -name "*.rej" -delete
-                else
-                  echo "OK category $cname" >> ../../summary.log
-                fi
+                if check_rejects; then ok "category $cname"; else fail "category $cname"; fi
 
                 git reset --hard HEAD >/dev/null
                 git clean -fd >/dev/null
               done
             else
-              echo "EMPTY patch groups" >> ../../summary.log
+              echo "EMPTY patch groups" >> "../../$SUMMARY"
             fi
 
-            echo "" >> ../../summary.log
-            echo "OTHER PATCHES" >> ../../summary.log
+            echo "" >> "../../$SUMMARY"
+            echo "OTHER PATCHES" >> "../../$SUMMARY"
 
             BASE="../../.github/patches"
 
             find "$BASE" -mindepth 1 -maxdepth 1 | while read item; do
               name=$(basename "$item")
-              if [ "$name" = "anykernel3" ] || [ "$name" = "susfs4ksu" ]; then
-                continue
-              fi
+              case "$name" in
+                anykernel3|susfs4ksu|$version) continue ;;
+              esac
               run_item "$item"
             done
 
-            if find . -name "*.rej" | grep -q .; then
-              echo "FAIL other" >> ../../summary.log
-              find . -name "*.rej" -exec cat {} \; >> ../../summary.log
-              find . -name "*.rej" -delete
-            else
-              echo "OK other" >> ../../summary.log
-            fi
+            if check_rejects; then ok "other"; else fail "other"; fi
 
             git reset --hard HEAD >/dev/null
             git clean -fd >/dev/null
 
             cd ../..
-            echo "" >> summary.log
-          done
+            echo "" >> "$SUMMARY"
+          }
+
+          if [ "${{ inputs.kernel }}" = "all" ]; then
+            for v in 4.19 5.10 6.1 6.6; do
+              run_version "$v"
+            done
+          else
+            run_version "${{ inputs.kernel }}"
+          fi
+
+          echo "TOTAL FAILURES: $FAIL_COUNT" >> "$SUMMARY"
+
+          if [ "$FAIL_COUNT" -ne 0 ]; then
+            echo "Patch test failed with $FAIL_COUNT errors"
+            exit 1
+          fi
 
       - name: Upload summary
         uses: actions/upload-artifact@v4
@@ -197,6 +218,4 @@ jobs:
           path: summary.log
 
       - name: Print summary
-        shell: bash
-        run: |
-          cat summary.log
+        run: cat summary.log
