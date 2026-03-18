@@ -11,19 +11,19 @@ inputs:
   apply_device_fixes:
     default: 'No'
   apply_cpu_scheduler_patches:
-    default: 'Yes'
+    default: 'No'
   apply_fs_patches:
-    default: 'Yes'
+    default: 'No'
   apply_memory_patches:
-    default: 'Yes'
+    default: 'No'
   apply_network_patches:
-    default: 'Yes'
+    default: 'No'
   apply_power_management_patches:
-    default: 'Yes'
+    default: 'No'
   apply_misc_patches:
-    default: 'Yes'
+    default: 'No'
   apply_other_patches:
-    default: 'Yes'
+    default: 'No'
   apply_zram_enhance:
     default: 'No'
   apply_bbg:
@@ -237,19 +237,6 @@ runs:
         apply_category "misc" "${{ inputs.apply_misc_patches }}"
         apply_category "other" "${{ inputs.apply_other_patches }}"
 
-        # Old WildKernels Optimization fallback if any exist directly in performance
-        PATCH_DIR="$GITHUB_WORKSPACE/.github/patches/$KERNEL_VERSION/performance"
-        if [ -d "$PATCH_DIR" ] && [ "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
-          echo "🧪 Applying WildKernels Optimization Patches..."
-          for patch_file in "$PATCH_DIR"/*.patch; do
-            if [ -f "$patch_file" ]; then
-              if patch -p1 --forward < "$patch_file" > /dev/null 2>&1; then
-                echo "  ✅ Applied: $(basename "$patch_file")"
-              fi
-            fi
-          done
-        fi
-
         if [ "${{ inputs.performance_patch }}" == "Snapdragon" ]; then
           echo "🚀 Applying qcom-cpufreq-hw..."
           cp $GITHUB_WORKSPACE/.github/patches/qcom-cpufreq-hw.c drivers/cpufreq/qcom-cpufreq-hw.c
@@ -316,4 +303,4 @@ runs:
       shell: bash
       working-directory: ${{ env.SRC_DIR }}
       run: |
-        bash $GITHUB_WORKSPACE/patches/common_perf.sh
+        bash $GITHUB_WORKSPACE/.github/patches/common_perf.sh
