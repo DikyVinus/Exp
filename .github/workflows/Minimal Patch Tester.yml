@@ -10,10 +10,10 @@ on:
         type: choice
         options:
           - all
-          - 4.19
-          - 5.10
-          - 6.1
-          - 6.6
+          - k419
+          - k510
+          - k61
+          - k66
       fail_fast:
         description: Stop on first failure
         required: true
@@ -33,36 +33,44 @@ jobs:
         with:
           submodules: false
 
-      - name: Init required submodules only
+      - name: Init submodules
         shell: bash
         run: |
           set -e
 
-          KERNEL="${{ inputs.kernel }}"
-          if [ "$KERNEL" = "all" ]; then
-            git submodule update --init --recursive
-          else
-            git submodule update --init src/${{ inputs.kernel }}
-          fi
+          case "${{ inputs.kernel }}" in
+            all)
+              git submodule update --init --recursive
+              ;;
+            k419)
+              git submodule update --init src/4.19
+              ;;
+            k510)
+              git submodule update --init src/5.10
+              ;;
+            k61)
+              git submodule update --init src/6.1
+              ;;
+            k66)
+              git submodule update --init src/6.6
+              ;;
+          esac
 
       - name: Run tester
         shell: bash
         run: |
           set -euo pipefail
 
-          git config --global user.name "CoreShift"
-          git config --global user.email "build@coreshift.dev"
-
+          FAIL_FAST="${{ inputs.fail_fast }}"
           SUMMARY=summary.log
           > "$SUMMARY"
 
           FAIL_COUNT=0
-          FAIL_FAST="${{ inputs.fail_fast }}"
 
           fail() {
             echo "FAIL $1" >> "$SUMMARY"
             FAIL_COUNT=$((FAIL_COUNT+1))
-            if [ "$FAIL_FAST" = "true" ]; then exit 1; fi
+            [ "$FAIL_FAST" = "true" ] && exit 1
           }
 
           ok() {
@@ -102,11 +110,6 @@ jobs:
             done < <(find "$d" -type f \( -name "*.patch" -o -name "*.sh" \) | sort)
           }
 
-          run_item() {
-            [ -f "$1" ] && run_file "$1" && return
-            [ -d "$1" ] && run_dir "$1"
-          }
-
           run_susfs() {
             local v="$1"
             local BASE="../../.github/patches/susfs4ksu"
@@ -124,8 +127,8 @@ jobs:
 
             [ ! -d "$DIR" ] && return 1
 
-            [ -d "$DIR/fs" ] && cp -r "$DIR/fs" . || true
-            [ -d "$DIR/include" ] && cp -r "$DIR/include" . || true
+            cp -r "$DIR/fs" . 2>/dev/null || true
+            cp -r "$DIR/include" . 2>/dev/null || true
 
             for p in "$DIR"/50_*.patch; do
               [ -f "$p" ] && apply_patch "$p" || true
@@ -140,6 +143,8 @@ jobs:
             local v="$1"
             local SRC="src/$v"
 
+            [ ! -d "$SRC" ] && fail "missing $SRC" && return
+
             echo "==========================================================" >> "$SUMMARY"
             echo "SUMMARY FOR $v ($SRC)" >> "$SUMMARY"
             echo "==========================================================" >> "$SUMMARY"
@@ -152,17 +157,12 @@ jobs:
 
             echo "ROOT MANAGERS" >> "../../$SUMMARY"
 
-            managers=()
             for d in ../../manager/*; do
               name=$(basename "$d")
-              echo "$name" | grep -q "$v" && managers+=("$d")
-            done
+              echo "$name" | grep -q "$v" || continue
 
-            for m in "${managers[@]}"; do
-              name=$(basename "$m")
-
-              if [ -f "../../$m/kernel/setup.sh" ]; then
-                bash "../../$m/kernel/setup.sh" >/dev/null 2>&1 || fail "$name"
+              if [ -f "../../$d/kernel/setup.sh" ]; then
+                bash "../../$d/kernel/setup.sh" >/dev/null 2>&1 || fail "$name"
               fi
 
               check_rejects && ok "$name" || fail "$name"
@@ -209,7 +209,11 @@ jobs:
                 anykernel3|susfs4ksu|$v) continue ;;
               esac
 
-              run_item "$item" || fail "other:$name"
+              if [ -f "$item" ]; then
+                run_file "$item" || fail "other:$name"
+              elif [ -d "$item" ]; then
+                run_dir "$item" || fail "other:$name"
+              fi
             done
 
             check_rejects && ok "other" || fail "other"
@@ -221,13 +225,17 @@ jobs:
             echo "" >> "$SUMMARY"
           }
 
-          if [ "${{ inputs.kernel }}" = "all" ]; then
-            for v in 4.19 5.10 6.1 6.6; do
-              run_version "$v"
-            done
-          else
-            run_version "${{ inputs.kernel }}"
-          fi
+          case "${{ inputs.kernel }}" in
+            all)
+              for v in 4.19 5.10 6.1 6.6; do
+                run_version "$v"
+              done
+              ;;
+            k419) run_version "4.19" ;;
+            k510) run_version "5.10" ;;
+            k61)  run_version "6.1" ;;
+            k66)  run_version "6.6" ;;
+          esac
 
           echo "TOTAL FAILURES: $FAIL_COUNT" >> "$SUMMARY"
           [ "$FAIL_COUNT" -ne 0 ] && exit 1
