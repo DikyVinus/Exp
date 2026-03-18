@@ -27,8 +27,7 @@ jobs:
         run: |
           git rm -r src || true
 
-      # -------- helper: add if missing --------
-      - name: Ensure submodules exist
+      - name: Ensure submodules exist (idempotent)
         shell: bash
         run: |
           set -e
@@ -38,7 +37,8 @@ jobs:
             local url="$2"
             local branch="$3"
 
-            if [ ! -d "$path/.git" ]; then
+            if ! git submodule status "$path" >/dev/null 2>&1; then
+              echo "adding: $path"
               if [ -n "$branch" ]; then
                 git submodule add --depth=1 -b "$branch" "$url" "$path"
               else
@@ -66,7 +66,6 @@ jobs:
           add_if_missing manager/resukisu-main https://github.com/Kingfinik98/ReSukiSU.git ""
           add_if_missing manager/wild-ksu https://github.com/WildKernels/Wild_KSU.git wild
 
-      # -------- update all existing --------
       - name: Update submodules
         run: |
           set -e
@@ -75,6 +74,7 @@ jobs:
 
       - name: Commit and push (if changed)
         run: |
-          git add .gitmodules */*/ .git/modules || true
+          git add .gitmodules
+          git add kernel manager
           git commit -m "Sync submodules (create if missing, update if exists)" || echo "No changes"
           git push
