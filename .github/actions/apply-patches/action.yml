@@ -54,9 +54,6 @@ runs:
         elif [ "$VERSION" == "5.10" ]; then
           SUS_BRANCH="gki-android12-5.10"
           ANDR_VER="android12"
-        elif [ "$VERSION" == "4.19" ]; then
-          SUS_BRANCH="gki-android12-5.10" # Default 4.19 logic handles it manually
-          ANDR_VER="android12"
         fi
         echo "SUS_BRANCH=$SUS_BRANCH" >> $GITHUB_ENV
         echo "ANDR_VER=$ANDR_VER" >> $GITHUB_ENV
@@ -78,17 +75,9 @@ runs:
         done
 
         if [ "$ROOT_VARIANT" == "KernelSU" ]; then
-          if [ "${{ inputs.kernel_version }}" == "4.19" ]; then
-            curl -LSs "https://raw.githubusercontent.com/xxblebleblexx/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s susfs-rksu-master
-          else
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
-          fi
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
         elif [ "$ROOT_VARIANT" == "KernelSU-Next" ]; then
-          if [ "${{ inputs.kernel_version }}" == "4.19" ]; then
-            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-          else
-            curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-          fi
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
         elif [ "$ROOT_VARIANT" == "KernelSU-Next (All Managers)" ]; then
           curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
           cd KernelSU-Next && patch -p1 --forward < $GITHUB_WORKSPACE/.github/patches/ksun-add-more-managers-support.patch || true && cd ..
@@ -105,17 +94,11 @@ runs:
         fi
 
         if [ "$HOOK_METHOD" == "susfs" ] || [ "$ROOT_VARIANT" == "ResukiSU" ]; then
-          if [ "${{ inputs.kernel_version }}" != "4.19" ]; then
-             susfs=$GITHUB_WORKSPACE/.github/patches/susfs4ksu/${{ env.SUS_BRANCH }}
-             if [ -d "$susfs" ]; then
-               cp -r $susfs/fs . && cp -r $susfs/include . && cp -r $susfs/50_add_susfs_in_${{ env.SUS_BRANCH }}.patch .
-               patch -p1 --forward --fuzz=3 < 50_add_susfs_in_${{ env.SUS_BRANCH }}.patch || true
-             fi
-          elif [[ "${{ inputs.kernel_version }}" == "4.19" ]]; then
-              if [[ "$DEFCONFIG" == *"gale"* ]]; then
-                  patch -p1 --forward --fuzz=3 < $GITHUB_WORKSPACE/.github/patches/susfs_gale.patch || true
-              fi
-          fi
+           susfs=$GITHUB_WORKSPACE/.github/patches/susfs4ksu/${{ env.SUS_BRANCH }}
+           if [ -d "$susfs" ]; then
+             cp -r $susfs/fs . && cp -r $susfs/include . && cp -r $susfs/50_add_susfs_in_${{ env.SUS_BRANCH }}.patch .
+             patch -p1 --forward --fuzz=3 < 50_add_susfs_in_${{ env.SUS_BRANCH }}.patch || true
+           fi
         fi
 
         if [[ "$ROOT_VARIANT" != "Vanilla" ]]; then
