@@ -79,25 +79,25 @@ runs:
 
         if [ "$ROOT_VARIANT" == "KernelSU" ]; then
           if [ "${{ inputs.kernel_version }}" == "4.19" ]; then
-            curl -LSs "https://raw.githubusercontent.com/xxblebleblexx/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s susfs-rksu-master
+            bash $GITHUB_WORKSPACE/manager/KernelSU-4.19/kernel/setup.sh
           else
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            bash $GITHUB_WORKSPACE/manager/KernelSU/kernel/setup.sh
           fi
         elif [ "$ROOT_VARIANT" == "KernelSU-Next" ]; then
           if [ "${{ inputs.kernel_version }}" == "4.19" ]; then
-            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+            bash $GITHUB_WORKSPACE/manager/KernelSU-Next-4.19/kernel/setup.sh
           else
-            curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+            bash $GITHUB_WORKSPACE/manager/KernelSU-Next/kernel/setup.sh
           fi
         elif [ "$ROOT_VARIANT" == "KernelSU-Next (All Managers)" ]; then
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+          bash $GITHUB_WORKSPACE/manager/KernelSU-Next/kernel/setup.sh
           cd KernelSU-Next && patch -p1 --forward < $GITHUB_WORKSPACE/.github/patches/ksun-add-more-managers-support.patch || true && cd ..
         elif [ "$ROOT_VARIANT" == "Rissu (MamboSU)" ]; then
-          curl -LSs "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/susfs-mambo-master/kernel/setup.sh" | bash -s susfs-mambo-master
+          bash $GITHUB_WORKSPACE/manager/Rissu/kernel/setup.sh
         elif [ "$ROOT_VARIANT" == "ResukiSU" ]; then
-          curl -LSs "https://raw.githubusercontent.com/Kingfinik98/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
+          bash $GITHUB_WORKSPACE/manager/ResukiSU/kernel/setup.sh
         elif [ "$ROOT_VARIANT" == "Wild KSU" ]; then
-          curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
+          bash $GITHUB_WORKSPACE/manager/Wild_KSU/kernel/setup.sh
         fi
 
         if [[ "$ROOT_VARIANT" != "Vanilla" ]]; then

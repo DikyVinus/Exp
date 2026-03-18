@@ -12,17 +12,19 @@ jobs:
       matrix:
         kernel:
           - version: '6.1'
-            src_path: 'src/6.1/ramabondanp/{source}'
+            src_path: 'src/6.1'
           - version: '6.6'
-            src_path: 'src/6.6/ramabondanp/{source}'
+            src_path: 'src/6.6'
           - version: '5.10'
-            src_path: 'src/5.10/MillenniumOSS/{source}'
+            src_path: 'src/5.10'
           - version: '4.19'
-            src_path: 'src/4.19/Mayuri-Chan/{source}'
+            src_path: 'src/4.19'
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Copy Kernel Source
         shell: bash
@@ -47,13 +49,13 @@ jobs:
           echo "" >> summary.log
 
           managers=(
-            "https://raw.githubusercontent.com/xxblebleblexx/KernelSU/refs/heads/main/kernel/setup.sh susfs-rksu-master"
-            "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh main"
-            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh legacy"
-            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh dev-susfs"
-            "https://raw.githubusercontent.com/RapliVx/KernelSU/refs/heads/susfs-mambo-master/kernel/setup.sh susfs-mambo-master"
-            "https://raw.githubusercontent.com/Kingfinik98/ReSukiSU/refs/heads/main/kernel/setup.sh main"
-            "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh wild"
+            "manager/KernelSU-4.19/kernel/setup.sh"
+            "manager/KernelSU/kernel/setup.sh"
+            "manager/KernelSU-Next-4.19/kernel/setup.sh"
+            "manager/KernelSU-Next/kernel/setup.sh"
+            "manager/Rissu/kernel/setup.sh"
+            "manager/ResukiSU/kernel/setup.sh"
+            "manager/Wild_KSU/kernel/setup.sh"
           )
 
           echo "🧪 TESTING ROOT MANAGERS (setup.sh)" >> summary.log
@@ -61,18 +63,17 @@ jobs:
 
           cd kernel
           for manager in "${managers[@]}"; do
-            url=$(echo $manager | awk '{print $1}')
-            branch=$(echo $manager | awk '{print $2}')
+            script_path="../$manager"
 
-            echo "Injecting: $url ($branch)"
-            curl -LSs "$url" | bash -s $branch > /dev/null 2>&1 || true
+            echo "Injecting: $script_path"
+            bash "$script_path" > /dev/null 2>&1 || true
 
             if find . -name "*.rej" | grep -q .; then
-              echo "❌ FAILED:  $branch" >> ../summary.log
+              echo "❌ FAILED:  $manager" >> ../summary.log
               find . -name "*.rej" -exec echo "--- {} ---" \; -exec cat {} \; >> ../summary.log
               find . -name "*.rej" -delete
             else
-              echo "✅ SUCCESS: $branch" >> ../summary.log
+              echo "✅ SUCCESS: $manager" >> ../summary.log
             fi
 
             git reset --hard HEAD > /dev/null 2>&1
