@@ -19,15 +19,17 @@ jobs:
 
       - shell: bash
         run: |
+          set -euo pipefail
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           git config --global --add safe.directory '*'
 
       - shell: bash
         run: |
+          set -euo pipefail
           git rm -r src || true
 
-      - name: Ensure submodules
+      - name: Ensure submodules (fully hardened)
         shell: bash
         run: |
           set -euo pipefail
@@ -37,22 +39,45 @@ jobs:
             local url="$2"
             local branch="$3"
 
-            if git submodule status "$path" >/dev/null 2>&1; then
-              echo "valid: $path"
-              return
+            local expected_url="$url"
+            local expected_branch="$branch"
+
+            local exists="false"
+            local current_url=""
+            local current_branch=""
+
+            if git config -f .gitmodules --get "submodule.${path}.url" >/dev/null 2>&1; then
+              exists="true"
+              current_url="$(git config -f .gitmodules --get "submodule.${path}.url" || true)"
+              current_branch="$(git config -f .gitmodules --get "submodule.${path}.branch" || true)"
+            fi
+
+            if [ "$exists" = "true" ]; then
+              if [ "$current_url" != "$expected_url" ] || [ "$current_branch" != "$expected_branch" ]; then
+                git submodule deinit -f "$path" || true
+                rm -rf ".git/modules/$path"
+                rm -rf "$path"
+                git rm -r --cached "$path" 2>/dev/null || true
+                exists="false"
+              fi
+            fi
+
+            if [ "$exists" = "false" ]; then
+              if [ -n "$branch" ]; then
+                git submodule add -b "$branch" "$url" "$path"
+                git -C "$path" fetch origin "${branch}" --depth=1
+                git -C "$path" checkout "${branch}"
+                git config -f .gitmodules "submodule.${path}.branch" "$branch"
+              else
+                git submodule add --depth=1 "$url" "$path"
+              fi
             fi
 
             if [ -d "$path" ]; then
-              rm -rf "$path"
-              git rm -r --cached "$path" 2>/dev/null || true
-            fi
-
-            if [ -n "$branch" ]; then
-              git submodule add -b "$branch" "$url" "$path"
-              git -C "$path" fetch origin "${branch}" --depth=1
-              git -C "$path" checkout "${branch}"
-            else
-              git submodule add --depth=1 "$url" "$path"
+              if [ -n "$branch" ]; then
+                git -C "$path" fetch origin "${branch}" --depth=1 || true
+                git -C "$path" checkout "${branch}" || true
+              fi
             fi
           }
 
@@ -85,10 +110,10 @@ jobs:
       - name: Commit and push
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           if ! git diff --quiet || ! git diff --cached --quiet; then
             git add .gitmodules kernel manager
-            git commit -m "Sync submodules"
+            git commit -m "Sync submodules (fully hardened)"
             git push
           else
             echo "No changes"
