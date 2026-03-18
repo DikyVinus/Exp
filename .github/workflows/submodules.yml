@@ -1,4 +1,4 @@
-name: Setup / Update Submodules (kernels + managers)
+name: Submodule Sync (Deterministic)
 
 on:
   workflow_dispatch:
@@ -7,114 +7,99 @@ permissions:
   contents: write
 
 jobs:
-  setup:
+  sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
-          persist-credentials: true
+          submodules: false
           fetch-depth: 1
+          persist-credentials: true
 
-      - shell: bash
+      - name: Git config
+        shell: bash
         run: |
           set -euo pipefail
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
           git config --global --add safe.directory '*'
 
-      - shell: bash
+      - name: Reset state
+        shell: bash
         run: |
           set -euo pipefail
-          git rm -r src || true
+          rm -rf kernel manager src
+          git rm -r --cached kernel manager src 2>/dev/null || true
 
-      - name: Ensure submodules (fully hardened)
+      - name: Ensure submodules (strict)
         shell: bash
         run: |
           set -euo pipefail
 
-          ensure_submodule () {
+          ensure() {
             local path="$1"
             local url="$2"
             local branch="$3"
 
-            local expected_url="$url"
-            local expected_branch="$branch"
-
-            local exists="false"
-            local current_url=""
-            local current_branch=""
-
+            # purge broken/mismatched state
             if git config -f .gitmodules --get "submodule.${path}.url" >/dev/null 2>&1; then
-              exists="true"
-              current_url="$(git config -f .gitmodules --get "submodule.${path}.url" || true)"
-              current_branch="$(git config -f .gitmodules --get "submodule.${path}.branch" || true)"
-            fi
+              local cur_url
+              cur_url="$(git config -f .gitmodules --get "submodule.${path}.url" || true)"
+              local cur_branch
+              cur_branch="$(git config -f .gitmodules --get "submodule.${path}.branch" || true)"
 
-            if [ "$exists" = "true" ]; then
-              if [ "$current_url" != "$expected_url" ] || [ "$current_branch" != "$expected_branch" ]; then
+              if [[ "$cur_url" != "$url" || "$cur_branch" != "$branch" ]]; then
                 git submodule deinit -f "$path" || true
-                rm -rf ".git/modules/$path"
-                rm -rf "$path"
+                rm -rf ".git/modules/$path" "$path"
                 git rm -r --cached "$path" 2>/dev/null || true
-                exists="false"
               fi
             fi
 
-            if [ "$exists" = "false" ]; then
-              if [ -n "$branch" ]; then
-                git submodule add -b "$branch" "$url" "$path"
-                git -C "$path" fetch origin "${branch}" --depth=1
-                git -C "$path" checkout "${branch}"
-                git config -f .gitmodules "submodule.${path}.branch" "$branch"
-              else
-                git submodule add --depth=1 "$url" "$path"
-              fi
-            fi
-
-            if [ -d "$path" ]; then
-              if [ -n "$branch" ]; then
-                git -C "$path" fetch origin "${branch}" --depth=1 || true
-                git -C "$path" checkout "${branch}" || true
-              fi
+            # add fresh
+            if [ -n "$branch" ]; then
+              git submodule add -f -b "$branch" --depth=1 "$url" "$path"
+              git config -f .gitmodules "submodule.${path}.branch" "$branch"
+            else
+              git submodule add -f --depth=1 "$url" "$path"
             fi
           }
 
-          ensure_submodule kernel/6.1 https://github.com/ramabondanp/android_kernel_common-6.1.git android14-6.1
-          ensure_submodule kernel/6.6 https://github.com/ramabondanp/android_kernel_common-6.6.git android15-6.6
-          ensure_submodule kernel/5.10 https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git chihiro-rebase
-          ensure_submodule kernel/4.19 https://github.com/Mayuri-Chan/android_kernel_xiaomi_gale.git cip
+          ensure kernel/6.1 https://github.com/ramabondanp/android_kernel_common-6.1.git android14-6.1
+          ensure kernel/6.6 https://github.com/ramabondanp/android_kernel_common-6.6.git android15-6.6
+          ensure kernel/5.10 https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git chihiro-rebase
+          ensure kernel/4.19 https://github.com/Mayuri-Chan/android_kernel_xiaomi_gale.git cip
 
-          ensure_submodule manager/kernelsu-main https://github.com/tiann/KernelSU.git ""
-          ensure_submodule manager/kernelsu-4.19 https://github.com/xxblebleblexx/KernelSU.git ""
+          ensure manager/kernelsu-main https://github.com/tiann/KernelSU.git ""
+          ensure manager/kernelsu-4.19 https://github.com/xxblebleblexx/KernelSU.git ""
 
-          ensure_submodule manager/kernelsu-next-dev-susfs https://github.com/pershoot/KernelSU-Next.git dev-susfs
-          ensure_submodule manager/kernelsu-next-legacy-4.19 https://github.com/KernelSU-Next/KernelSU-Next.git next
+          ensure manager/kernelsu-next-dev-susfs https://github.com/pershoot/KernelSU-Next.git dev-susfs
+          ensure manager/kernelsu-next-legacy-4.19 https://github.com/KernelSU-Next/KernelSU-Next.git next
 
-          ensure_submodule manager/mambo-susfs https://github.com/RapliVx/KernelSU.git susfs-mambo-master
-          ensure_submodule manager/resukisu-main https://github.com/Kingfinik98/ReSukiSU.git ""
-          ensure_submodule manager/wild-ksu https://github.com/WildKernels/Wild_KSU.git wild
+          ensure manager/mambo-susfs https://github.com/RapliVx/KernelSU.git susfs-mambo-master
+          ensure manager/resukisu-main https://github.com/Kingfinik98/ReSukiSU.git ""
+          ensure manager/wild-ksu https://github.com/WildKernels/Wild_KSU.git wild
 
-      - shell: bash
+      - name: Sync + init
+        shell: bash
         run: |
           set -euo pipefail
           git submodule sync --recursive
-          git submodule update --init --recursive --depth=1
+          git submodule update --init --recursive --depth=1 --jobs=4
 
-      - shell: bash
+      - name: Update remote heads (non-blocking)
+        shell: bash
         run: |
           set -euo pipefail
           git submodule update --remote --recursive || true
 
-      - name: Commit and push
+      - name: Commit
         shell: bash
         run: |
           set -euo pipefail
           if ! git diff --quiet || ! git diff --cached --quiet; then
             git add .gitmodules kernel manager
-            git commit -m "Sync submodules (fully hardened)"
+            git commit -m "submodules: deterministic sync"
             git push
-          else
-            echo "No changes"
           fi
