@@ -1,10 +1,10 @@
-name: Extract payload.bin (skip >2GB artifacts)
+name: Extract payload.bin from OTA zip (skip >2GB artifacts)
 
 on:
   workflow_dispatch:
     inputs:
-      file_id:
-        description: "Google Drive FILE_ID"
+      file_url:
+        description: "Direct URL to OTA zip (must be curlable)"
         required: true
         type: string
 
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Free disk space (cleanup)
+      - name: Free disk space
         run: |
           df -h
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
@@ -22,14 +22,31 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-pip wget tar
-          pip3 install --no-cache-dir gdown
+          sudo apt-get install -y wget unzip tar xxd
 
-      - name: Download payload.bin
+      - name: Download OTA zip
         run: |
-          gdown ${{ github.event.inputs.file_id }} -O payload.bin
+          wget -O ota.zip "${{ github.event.inputs.file_url }}"
+          ls -lh ota.zip
+
+      - name: Extract payload.bin from zip
+        run: |
+          unzip -j ota.zip payload.bin -d .
           ls -lh payload.bin
-          file payload.bin
+
+      - name: Validate payload.bin
+        run: |
+          SIZE=$(stat -c%s payload.bin)
+          if [ "$SIZE" -lt 100000000 ]; then
+            echo "payload.bin too small"
+            exit 1
+          fi
+
+          MAGIC=$(head -c 4 payload.bin | xxd -p)
+          if [ "$MAGIC" != "43724155" ]; then
+            echo "Invalid payload (missing CrAU)"
+            exit 1
+          fi
 
       - name: Install payload-dumper-go
         run: |
@@ -37,35 +54,54 @@ jobs:
           tar -xzf payload-dumper-go_1.3.0_linux_amd64.tar.gz
           chmod +x payload-dumper-go
 
-      - name: Extract payload.bin
+      - name: Preflight extraction (boot only)
         run: |
+          set -euo pipefail
+          mkdir -p test_output
+          ./payload-dumper-go payload.bin --out test_output --partitions boot
+
+          COUNT=$(find test_output -type f -name "*.img" | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Preflight extraction failed"
+            exit 1
+          fi
+
+          rm -rf test_output
+
+      - name: Full extraction
+        run: |
+          set -euo pipefail
           mkdir -p output
           ./payload-dumper-go payload.bin --out output
 
-      - name: Verify extraction (critical)
+      - name: Validate extracted files
         run: |
-          echo "Listing output:"
-          ls -lah output || true
-          echo "Disk usage:"
-          du -sh output || true
+          COUNT=$(find output -type f -name "*.img" | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No images extracted"
+            exit 1
+          fi
 
-      - name: Remove payload.bin (free space)
+      - name: Cleanup payload + zip
         run: |
-          rm -f payload.bin
+          rm -f payload.bin ota.zip
           df -h
 
       - name: Remove files larger than 2GB
         run: |
           find output -type f -size +2G -print -delete
 
-      - name: Verify remaining files
+      - name: Ensure files remain
         run: |
-          echo "Remaining files:"
-          ls -lah output || true
+          COUNT=$(find output -type f | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "All files removed (>2GB)"
+            exit 1
+          fi
 
       - name: Upload artifacts (<2GB only)
         uses: actions/upload-artifact@v4
         with:
           name: extracted-images
-          path: output/*
+          path: output/**
           if-no-files-found: error
