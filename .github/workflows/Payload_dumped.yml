@@ -53,21 +53,7 @@ jobs:
           wget https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz
           tar -xzf payload-dumper-go_1.3.0_linux_amd64.tar.gz
           chmod +x payload-dumper-go
-
-      - name: Preflight extraction (boot only)
-        run: |
-          set -euo pipefail
-          mkdir -p test_output
-          ./payload-dumper-go payload.bin --out test_output --partitions boot
-
-          COUNT=$(find test_output -type f -name "*.img" | wc -l)
-          if [ "$COUNT" -eq 0 ]; then
-            echo "Preflight extraction failed"
-            exit 1
-          fi
-
-          rm -rf test_output
-
+          
       - name: Full extraction
         run: |
           set -euo pipefail
