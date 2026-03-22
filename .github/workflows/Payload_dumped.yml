@@ -16,10 +16,7 @@ jobs:
       - name: Free disk space (cleanup)
         run: |
           df -h
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
           df -h
 
       - name: Install dependencies
@@ -32,6 +29,7 @@ jobs:
         run: |
           gdown ${{ github.event.inputs.file_id }} -O payload.bin
           ls -lh payload.bin
+          file payload.bin
 
       - name: Install payload-dumper-go
         run: |
@@ -44,6 +42,13 @@ jobs:
           mkdir -p output
           ./payload-dumper-go payload.bin --out output
 
+      - name: Verify extraction (critical)
+        run: |
+          echo "Listing output:"
+          ls -lah output || true
+          echo "Disk usage:"
+          du -sh output || true
+
       - name: Remove payload.bin (free space)
         run: |
           rm -f payload.bin
@@ -53,9 +58,14 @@ jobs:
         run: |
           find output -type f -size +2G -print -delete
 
+      - name: Verify remaining files
+        run: |
+          echo "Remaining files:"
+          ls -lah output || true
+
       - name: Upload artifacts (<2GB only)
         uses: actions/upload-artifact@v4
         with:
           name: extracted-images
-          path: output/
-          if-no-files-found: ignore
+          path: output/*
+          if-no-files-found: error
