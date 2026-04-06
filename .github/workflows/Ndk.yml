@@ -1,1 +1,156 @@
+name: build-termux-ndk
 
+on:
+  workflow_dispatch:
+    inputs:
+      ndk_version:
+        description: "NDK version (e.g. r26d). Leave empty = latest"
+        required: false
+      llvm_ref:
+        description: "LLVM ref (tag/branch/commit). Leave empty = main"
+        required: false
+      patch_mode:
+        description: "patch strategy: strict | best-effort"
+        required: false
+        default: strict
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      LLVM_SRC: llvm-project
+      BUILD_DIR: build-llvm
+      INSTALL_DIR: out-llvm
+
+    steps:
+      - name: Checkout patches
+        uses: actions/checkout@v4
+        with:
+          repository: lzhiyong/termux-ndk
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake ninja-build python3 \
+            wget unzip curl jq build-essential libxml2-dev
+
+      # -----------------------------------
+      # 1. Resolve NDK (drawdown-aware)
+      # -----------------------------------
+      - name: Resolve NDK source
+        id: ndk
+        run: |
+          if [ -n "${{ inputs.ndk_version }}" ]; then
+            VER=${{ inputs.ndk_version }}
+            URL="https://dl.google.com/android/repository/android-ndk-${VER}-linux.zip"
+            FILE="android-ndk-${VER}-linux.zip"
+            DIR="android-ndk-${VER}"
+          else
+            URL=$(curl -s https://developer.android.com/ndk/downloads \
+              | grep -oP 'https://dl.google.com/android/repository/android-ndk-[^"]+-linux.zip' \
+              | head -n1)
+
+            FILE=$(basename $URL)
+            DIR=$(echo $FILE | sed 's/-linux.zip//')
+          fi
+
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "dir=$DIR" >> $GITHUB_OUTPUT
+
+      - name: Download NDK
+        run: |
+          wget ${{ steps.ndk.outputs.url }}
+          unzip ${{ steps.ndk.outputs.file }}
+
+      # -----------------------------------
+      # 2. Resolve LLVM (drawdown-aware)
+      # -----------------------------------
+      - name: Clone LLVM
+        run: |
+          git clone https://github.com/llvm/llvm-project.git ${LLVM_SRC}
+          cd ${LLVM_SRC}
+
+          if [ -n "${{ inputs.llvm_ref }}" ]; then
+            git checkout ${{ inputs.llvm_ref }}
+          else
+            git checkout main
+          fi
+
+      # -----------------------------------
+      # 3. Apply patches (controlled mode)
+      # -----------------------------------
+      - name: Apply patches
+        run: |
+          cd ${LLVM_SRC}
+
+          for p in ../patches/*.patch; do
+            if [ "${{ inputs.patch_mode }}" = "best-effort" ]; then
+              git apply --reject --whitespace=fix "$p" || true
+            else
+              git apply "$p"
+            fi
+          done
+
+      # -----------------------------------
+      # 4. Configure
+      # -----------------------------------
+      - name: Configure LLVM
+        run: |
+          cmake -S ${LLVM_SRC}/llvm -B ${BUILD_DIR} \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR}
+
+      # -----------------------------------
+      # 5. Build
+      # -----------------------------------
+      - name: Build LLVM
+        run: |
+          cmake --build ${BUILD_DIR} -j$(nproc)
+          cmake --install ${BUILD_DIR}
+
+      # -----------------------------------
+      # 6. Inject
+      # -----------------------------------
+      - name: Replace toolchain
+        run: |
+          TOOLCHAIN=${{ steps.ndk.outputs.dir }}/toolchains/llvm/prebuilt/linux-x86_64
+
+          rm -rf $TOOLCHAIN/bin/*
+          rm -rf $TOOLCHAIN/lib/clang
+
+          cp -r ${INSTALL_DIR}/bin/* $TOOLCHAIN/bin/
+          cp -r ${INSTALL_DIR}/lib/clang $TOOLCHAIN/lib/
+
+      # -----------------------------------
+      # 7. Dynamic wrappers
+      # -----------------------------------
+      - name: Fix symlinks
+        run: |
+          BIN=${{ steps.ndk.outputs.dir }}/toolchains/llvm/prebuilt/linux-x86_64/bin
+
+          for api in 21 24 28 33; do
+            ln -sf clang $BIN/aarch64-linux-android${api}-clang
+            ln -sf clang++ $BIN/aarch64-linux-android${api}-clang++
+          done
+
+      # -----------------------------------
+      # 8. Package
+      # -----------------------------------
+      - name: Package
+        run: |
+          zip -r termux-ndk-${{ steps.ndk.outputs.dir }}.zip \
+            ${{ steps.ndk.outputs.dir }}
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-ndk
+          path: termux-ndk-*.zip
