@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      - name: Configure git (fast + stable)
+      - name: Configure git
         run: |
           git config --global protocol.version 2
           git config --global core.compression 0
@@ -55,32 +55,26 @@ jobs:
 
           git submodule sync --recursive
 
-      - name: Update submodules (targeted + fast + safe)
+      - name: Update all submodules (dynamic)
         run: |
-          update() {
+          git submodule sync --recursive
+
+          git config -f .gitmodules --get-regexp path | while read -r key path; do
+            echo "updating $path"
+
             git -c submodule.fetchJobs=1 submodule update \
               --init \
               --remote \
               --depth=1 \
               --filter=blob:none \
-              "$1" || echo "skip $1"
-          }
-
-          update src/5.10
-          update src/6.1
-          update src/6.6
-
-          update manager/KernelSU
-          update manager/KernelSU-Next
-          update manager/ResukiSU
-          update manager/Rissu
-          update manager/Wild_KSU
+              "$path" || echo "skip $path"
+          done
 
       - name: Commit and push if changed
         run: |
           if [[ -n $(git status --porcelain) ]]; then
             git add .gitmodules
-            git add src manager
+            git add .
             git commit -m "auto: update submodules"
             git push
           fi
