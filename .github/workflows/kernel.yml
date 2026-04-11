@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "Select kernel version"
+        description: "Kernel version"
         required: true
         type: choice
         options:
@@ -12,68 +12,71 @@ on:
           - "6.1"
           - "6.6"
 
+      manager:
+        description: "KSU manager"
+        required: true
+        type: choice
+        options:
+          - "KernelSU"
+          - "KernelSU-Next"
+          - "ResukiSU"
+          - "Rissu"
+          - "Wild_KSU"
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (self with submodules)
+      - name: Checkout (no submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
 
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y git bc bison flex libssl-dev make libc6-dev libncurses5-dev crossbuild-essential-arm64 repo zip curl
+          sudo apt install -y git repo zip curl
 
-      - name: Set branch + src path
-        id: cfg
+      - name: Init selected submodules
+        run: |
+          git submodule init src/${{ github.event.inputs.kernel_version }}
+          git submodule update --depth=1 src/${{ github.event.inputs.kernel_version }}
+
+          git submodule init manager/${{ github.event.inputs.manager }}
+          git submodule update --depth=1 manager/${{ github.event.inputs.manager }}
+
+      - name: Set manifest branch
+        id: branch
         run: |
           case "${{ github.event.inputs.kernel_version }}" in
-            "5.10")
-              echo "branch=common-android13-5.10" >> $GITHUB_OUTPUT
-              echo "src=common-5.10" >> $GITHUB_OUTPUT
-              ;;
-            "6.1")
-              echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT
-              echo "src=common-6.1" >> $GITHUB_OUTPUT
-              ;;
-            "6.6")
-              echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT
-              echo "src=common-6.6" >> $GITHUB_OUTPUT
-              ;;
+            "5.10") echo "branch=common-android13-5.10" >> $GITHUB_OUTPUT ;;
+            "6.1")  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT ;;
+            "6.6")  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT ;;
           esac
 
       - name: Init + sync Google kernel
         run: |
           mkdir kernel && cd kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.cfg.outputs.branch }}
+          repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.branch.outputs.branch }}
           repo sync -c -j$(nproc)
 
-      - name: Replace kernel/common with selected source
+      - name: Replace kernel/common
         run: |
           rm -rf kernel/common
-          cp -r ${{ steps.cfg.outputs.src }} kernel/common
+          cp -r src/${{ github.event.inputs.kernel_version }} kernel/common
 
-      - name: Apply KSU patches (manager script only)
+      - name: Apply KSU (selected manager only)
         run: |
           cd kernel/common
-          bash ../../manager/setup.sh $(pwd)
+          bash ../../manager/${{ github.event.inputs.manager }}/setup.sh $(pwd)
 
-      - name: Setup clang
+      - name: Build kernel (Google build.sh)
         run: |
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang
-
-      - name: Build kernel
-        run: |
-          cd kernel/common
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-
-          make O=out CC=clang defconfig
-          make -j$(nproc) O=out CC=clang
+          cd kernel
+          export BUILD_CONFIG=common/build.config.gki.aarch64
+          export OUT_DIR=$(pwd)/out
+          bash build/build.sh
 
       - name: Clone AnyKernel3
         run: |
@@ -81,12 +84,12 @@ jobs:
 
       - name: Copy kernel image
         run: |
-          cp kernel/common/out/arch/arm64/boot/Image AnyKernel3/
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
 
       - name: Zip AnyKernel3
         run: |
           cd AnyKernel3
-          zip -r9 kernel-${{ github.event.inputs.kernel_version }}.zip *
+          zip -r9 kernel-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.manager }}.zip *
 
       - name: Upload zip
         uses: actions/upload-artifact@v4
