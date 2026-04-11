@@ -8,7 +8,7 @@ on:
     types: [update-submodules]
 
 permissions:
-  contents: write-all
+  contents: write
 
 jobs:
   update:
