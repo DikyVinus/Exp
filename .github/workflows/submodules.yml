@@ -29,37 +29,12 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-      - name: Normalize submodules (exclude susfs)
+      - name: Sync submodules
         run: |
           git submodule sync --recursive
 
-          git config -f .gitmodules --get-regexp path | while read -r key path; do
-            # skip susfs
-            if [[ "$path" == susfs/* ]]; then
-              echo "skip normalize $path"
-              continue
-            fi
-
-            name=$(echo "$key" | sed 's/\.path//')
-            url=$(git config -f .gitmodules "$name.url")
-
-            default_branch=$(git ls-remote --symref "$url" HEAD | awk '/^ref:/ {sub("refs/heads/","",$2); print $2}')
-
-            if [ -z "$default_branch" ]; then
-              echo "skip $path"
-              continue
-            fi
-
-            git config -f .gitmodules "$name.branch" "$default_branch"
-            echo "$path -> $default_branch"
-          done
-
-          git submodule sync --recursive
-
-      - name: Update submodules (dynamic + safe)
+      - name: Update submodules (respect .gitmodules only)
         run: |
-          git submodule sync --recursive
-
           git config -f .gitmodules --get-regexp path | while read -r key path; do
             echo "updating $path"
 
