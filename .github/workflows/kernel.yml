@@ -33,16 +33,20 @@ jobs:
           echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
 
-      - name: Configure git/curl fail-fast
+      - name: Configure git/curl (stable, not aggressive)
         run: |
-          git config --global http.lowSpeedLimit 1000
-          git config --global http.lowSpeedTime 5
+          git config --global http.lowSpeedLimit 100
+          git config --global http.lowSpeedTime 20
           git config --global protocol.version 2
           git config --global core.compression 0
+          git config --global http.postBuffer 524288000
+          git config --global pack.windowMemory 100m
+          git config --global pack.packSizeLimit 100m
+          git config --global pack.threads 1
 
           echo "ipv4" >> ~/.curlrc
-          echo "speed-limit = 1000" >> ~/.curlrc
-          echo "speed-time = 5" >> ~/.curlrc
+          echo "speed-limit = 100" >> ~/.curlrc
+          echo "speed-time = 20" >> ~/.curlrc
 
       - name: Checkout (no submodules)
         uses: actions/checkout@v4
@@ -54,13 +58,10 @@ jobs:
           sudo apt update
           sudo apt install -y git repo zip curl ccache
 
-      - name: Init selected submodules
+      - name: Init selected submodules (serialized + shallow)
         run: |
-          git submodule init src/${{ github.event.inputs.kernel_version }}
-          git submodule update --depth=1 src/${{ github.event.inputs.kernel_version }}
-
-          git submodule init manager/${{ github.event.inputs.manager }}
-          git submodule update --depth=1 manager/${{ github.event.inputs.manager }}
+          git -c submodule.fetchJobs=1 submodule update --init --depth=1 src/${{ github.event.inputs.kernel_version }}
+          git -c submodule.fetchJobs=1 submodule update --init --depth=1 manager/${{ github.event.inputs.manager }}
 
       - name: Set manifest branch
         id: branch
@@ -80,16 +81,16 @@ jobs:
           path: kernel/.repo
           key: repo-${{ steps.branch.outputs.branch }}
 
-      - name: Init + sync Google kernel
+      - name: Init + sync Google kernel (stable)
         run: |
           cd kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.branch.outputs.branch }} || true
 
-          export GIT_HTTP_LOW_SPEED_LIMIT=1000
-          export GIT_HTTP_LOW_SPEED_TIME=5
+          export GIT_HTTP_LOW_SPEED_LIMIT=100
+          export GIT_HTTP_LOW_SPEED_TIME=20
           export REPO_SYNC_FORCE_IPV4=1
 
-          repo sync -c -j$(nproc) --fail-fast
+          repo sync -c -j4 --fail-fast
 
       - name: Replace kernel/common
         run: |
