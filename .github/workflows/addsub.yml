@@ -1,0 +1,85 @@
+name: Manage Sources (manager / src / susfs)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target to modify"
+        required: true
+        type: choice
+        options:
+          - "manager"
+          - "src"
+          - "susfs"
+
+      name:
+        description: "Name (e.g. KernelSU, 6.1, susfs)"
+        required: true
+        type: string
+
+      repo:
+        description: "Git URL"
+        required: true
+        type: string
+
+      branch:
+        description: "Branch (optional)"
+        required: false
+        type: string
+
+      action:
+        description: "Action"
+        required: true
+        type: choice
+        options:
+          - "add"
+          - "replace"
+
+permissions:
+  contents: write
+
+jobs:
+  modify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+      - name: Apply change
+        run: |
+          TARGET="${{ github.event.inputs.target }}"
+          NAME="${{ github.event.inputs.name }}"
+          REPO="${{ github.event.inputs.repo }}"
+          BRANCH="${{ github.event.inputs.branch }}"
+          ACTION="${{ github.event.inputs.action }}"
+
+          PATH_DIR="$TARGET/$NAME"
+
+          if [ "$ACTION" = "replace" ]; then
+            git submodule deinit -f "$PATH_DIR" || true
+            git rm -f "$PATH_DIR" || true
+            rm -rf ".git/modules/$PATH_DIR" || true
+          fi
+
+          git submodule add --depth=1 "$REPO" "$PATH_DIR"
+
+          if [ -n "$BRANCH" ]; then
+            git config -f .gitmodules submodule."$PATH_DIR".branch "$BRANCH"
+          fi
+
+          git submodule sync --recursive
+
+      - name: Commit and push
+        run: |
+          git add .gitmodules manager src susfs || true
+          git commit -m "manage: ${{ github.event.inputs.action }} ${{ github.event.inputs.target }}/${{ github.event.inputs.name }}"
+          git push
