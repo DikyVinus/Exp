@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y git repo zip curl
+          sudo apt install -y git repo zip curl ccache
 
       - name: Init selected submodules
         run: |
@@ -55,10 +55,20 @@ jobs:
             "6.6")  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT ;;
           esac
 
+      - name: Prepare kernel dir
+        run: |
+          mkdir -p kernel
+
+      - name: Cache repo (.repo)
+        uses: actions/cache@v4
+        with:
+          path: kernel/.repo
+          key: repo-${{ steps.branch.outputs.branch }}
+
       - name: Init + sync Google kernel
         run: |
-          mkdir kernel && cd kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.branch.outputs.branch }}
+          cd kernel
+          repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.branch.outputs.branch }} || true
           repo sync -c -j$(nproc)
 
       - name: Replace kernel/common
@@ -71,9 +81,23 @@ jobs:
           cd kernel/common
           bash ../../manager/${{ github.event.inputs.manager }}/setup.sh $(pwd)
 
+      - name: Setup ccache
+        run: |
+          export USE_CCACHE=1
+          export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
+          ccache -M 5G
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ github.event.inputs.kernel_version }}
+
       - name: Build kernel (Google build.sh)
         run: |
           cd kernel
+          export USE_CCACHE=1
+          export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR=$(pwd)/out
           bash build/build.sh
