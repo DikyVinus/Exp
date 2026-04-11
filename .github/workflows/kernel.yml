@@ -28,6 +28,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Force IPv4 + disable IPv6
+        run: |
+          echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+
+      - name: Configure git/curl fail-fast
+        run: |
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 5
+          git config --global protocol.version 2
+          git config --global core.compression 0
+
+          echo "ipv4" >> ~/.curlrc
+          echo "speed-limit = 1000" >> ~/.curlrc
+          echo "speed-time = 5" >> ~/.curlrc
+
       - name: Checkout (no submodules)
         uses: actions/checkout@v4
         with:
@@ -56,8 +72,7 @@ jobs:
           esac
 
       - name: Prepare kernel dir
-        run: |
-          mkdir -p kernel
+        run: mkdir -p kernel
 
       - name: Cache repo (.repo)
         uses: actions/cache@v4
@@ -69,7 +84,12 @@ jobs:
         run: |
           cd kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.branch.outputs.branch }} || true
-          repo sync -c -j$(nproc)
+
+          export GIT_HTTP_LOW_SPEED_LIMIT=1000
+          export GIT_HTTP_LOW_SPEED_TIME=5
+          export REPO_SYNC_FORCE_IPV4=1
+
+          repo sync -c -j$(nproc) --fail-fast
 
       - name: Replace kernel/common
         run: |
