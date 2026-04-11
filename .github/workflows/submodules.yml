@@ -22,20 +22,42 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      - name: Configure git
+      - name: Configure git (fast + stable)
         run: |
+          git config --global protocol.version 2
+          git config --global core.compression 0
+          git config --global http.postBuffer 524288000
+          git config --global pack.windowMemory 100m
+          git config --global pack.packSizeLimit 100m
+          git config --global pack.threads 1
+
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-      - name: Update submodules (shallow + remote)
+      - name: Update submodules (targeted + parallel-safe)
         run: |
           git submodule sync --recursive
-          git -c submodule.fetchJobs=1 submodule update \
-            --init \
-            --remote \
-            --recursive \
-            --depth=1 \
-            --filter=blob:none
+
+          update() {
+            git -c submodule.fetchJobs=1 submodule update \
+              --init \
+              --remote \
+              --depth=1 \
+              --filter=blob:none \
+              "$1" || echo "skip $1"
+          }
+
+          # kernel sources
+          update src/5.10
+          update src/6.1
+          update src/6.6
+
+          # managers (only valid ones)
+          update manager/KernelSU
+          update manager/KernelSU-Next
+          update manager/ResukiSU
+          update manager/Rissu
+          update manager/Wild_KSU
 
       - name: Commit and push if changed
         run: |
