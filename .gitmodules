@@ -50,3 +50,7 @@
 	path = susfs/gki-android14-6.1
 	url = https://gitlab.com/simonpunk/susfs4ksu
 	branch = gki-android14-6.1
+[submodule "manager/gki-android15-6.6"]
+	path = manager/gki-android15-6.6
+	url = https://gitlab.com/simonpunk/susfs4ksu
+	branch = gki-android15-6.6
