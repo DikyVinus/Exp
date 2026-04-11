@@ -7,6 +7,9 @@ on:
   repository_dispatch:
     types: [update-submodules]
 
+permissions:
+  contents: write-all
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -15,19 +18,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+          fetch-depth: 0
           submodules: false
 
-      - name: Update submodules
+      - name: Configure git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+      - name: Update submodules (shallow + remote)
         run: |
           git submodule sync --recursive
-          git submodule update --init --remote --recursive
+          git -c submodule.fetchJobs=1 submodule update \
+            --init \
+            --remote \
+            --recursive \
+            --depth=1 \
+            --filter=blob:none
 
-      - name: Commit changes
+      - name: Commit and push if changed
         run: |
           if [[ -n $(git status --porcelain) ]]; then
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
             git add .
             git commit -m "auto: update submodules"
             git push
