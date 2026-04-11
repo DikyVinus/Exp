@@ -34,10 +34,29 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-      - name: Update submodules (targeted + parallel-safe)
+      - name: Normalize submodules to default branch
         run: |
           git submodule sync --recursive
 
+          git config -f .gitmodules --get-regexp path | while read -r key path; do
+            name=$(echo "$key" | sed 's/\.path//')
+            url=$(git config -f .gitmodules "$name.url")
+
+            default_branch=$(git ls-remote --symref "$url" HEAD | awk '/^ref:/ {sub("refs/heads/","",$2); print $2}')
+
+            if [ -z "$default_branch" ]; then
+              echo "skip $path"
+              continue
+            fi
+
+            git config -f .gitmodules "$name.branch" "$default_branch"
+            echo "$path -> $default_branch"
+          done
+
+          git submodule sync --recursive
+
+      - name: Update submodules (targeted + fast + safe)
+        run: |
           update() {
             git -c submodule.fetchJobs=1 submodule update \
               --init \
@@ -47,12 +66,10 @@ jobs:
               "$1" || echo "skip $1"
           }
 
-          # kernel sources
           update src/5.10
           update src/6.1
           update src/6.6
 
-          # managers (only valid ones)
           update manager/KernelSU
           update manager/KernelSU-Next
           update manager/ResukiSU
@@ -62,7 +79,8 @@ jobs:
       - name: Commit and push if changed
         run: |
           if [[ -n $(git status --porcelain) ]]; then
-            git add .
+            git add .gitmodules
+            git add src manager
             git commit -m "auto: update submodules"
             git push
           fi
