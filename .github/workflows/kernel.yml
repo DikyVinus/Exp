@@ -72,7 +72,7 @@ jobs:
         id: branch
         run: |
           case "${{ github.event.inputs.kernel_version }}" in
-            "5.10") echo "branch=common-android13-5.10" >> $GITHUB_OUTPUT ;;
+            "5.10") echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT ;;
             "6.1")  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT ;;
             "6.6")  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT ;;
           esac
