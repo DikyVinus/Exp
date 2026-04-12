@@ -28,17 +28,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Free Disk Space
-        uses: endersonmenezes/free-disk-space@v3
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: true
-          remove_swap: false
-          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable firefox postgresql* temurin-* mysql* dotnet-sdk-*"
-          remove_packages_one_command: true
-
       - name: Force IPv4
         run: |
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
@@ -57,10 +46,9 @@ jobs:
 
       - name: Install deps
         run: |
-          sudo apt update
           sudo apt install -y git repo zip curl ccache rsync
 
-      - name: Init submodules
+      - name: Init submodules (minimal)
         run: |
           git -c submodule.fetchJobs=1 submodule update \
             --init --depth=1 --filter=blob:none \
@@ -88,7 +76,7 @@ jobs:
           path: kernel/.repo
           key: repo-${{ steps.branch.outputs.branch }}
 
-      - name: Sync Google kernel
+      - name: Init repo (no common)
         run: |
           cd kernel
           repo init \
@@ -96,6 +84,17 @@ jobs:
             -b ${{ steps.branch.outputs.branch }} \
             --depth=1 || true
 
+          mkdir -p .repo/local_manifests
+
+          cat > .repo/local_manifests/remove-common.xml << 'EOF'
+          <manifest>
+            <remove-project name="kernel/common" />
+          </manifest>
+          EOF
+
+      - name: Sync Google kernel (optimized)
+        run: |
+          cd kernel
           export REPO_SYNC_FORCE_IPV4=1
 
           repo sync -c -j4 \
@@ -104,9 +103,9 @@ jobs:
             --prune \
             --fail-fast
 
-      - name: Replace kernel/common
+      - name: Inject kernel source
         run: |
-          rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
+          rsync -a src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
       - name: Force ThinLTO
         run: |
@@ -155,15 +154,10 @@ jobs:
           IMAGE=$(find kernel/out/dist -type f -name "Image*" | head -n1)
 
           if [ -z "$IMAGE" ]; then
-            echo "Image not found in dist, fallback search"
-
             IMAGE=$(find kernel/out -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) | head -n1)
           fi
 
-          if [ -z "$IMAGE" ]; then
-            echo "kernel image not found"
-            exit 1
-          fi
+          [ -z "$IMAGE" ] && exit 1
 
           echo "Using $IMAGE"
           cp "$IMAGE" AnyKernel3/
