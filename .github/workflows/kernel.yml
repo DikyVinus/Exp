@@ -92,7 +92,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.branch.outputs.branch }}-v5
+          key: repo-${{ steps.branch.outputs.branch }}-v7
 
       - name: Init + sync Google kernel
         run: |
@@ -115,6 +115,31 @@ jobs:
       - name: Replace kernel/common
         run: |
           rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
+
+      # --- correct placement ---
+      - name: Force ThinLTO (defconfig-level, generic)
+        run: |
+          set -e
+
+          DEFCONFIG=$(find kernel/common -type f -path "*/arch/arm64/configs/gki_defconfig" | head -n1)
+
+          if [ -z "$DEFCONFIG" ]; then
+            echo "gki_defconfig not found"
+            exit 1
+          fi
+
+          echo "Patching $DEFCONFIG"
+
+          sed -i 's/^CONFIG_LTO_CLANG_FULL=y/# CONFIG_LTO_CLANG_FULL is not set/' "$DEFCONFIG"
+
+          grep -q '^CONFIG_LTO_CLANG_THIN=y' "$DEFCONFIG" || \
+            echo 'CONFIG_LTO_CLANG_THIN=y' >> "$DEFCONFIG"
+
+          grep -q '^CONFIG_LTO_CLANG=y' "$DEFCONFIG" || \
+            echo 'CONFIG_LTO_CLANG=y' >> "$DEFCONFIG"
+
+          grep -q '^CONFIG_CFI_CLANG=y' "$DEFCONFIG" || \
+            echo 'CONFIG_CFI_CLANG=y' >> "$DEFCONFIG"
 
       - name: Apply KSU
         run: |
