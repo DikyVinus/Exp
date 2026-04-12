@@ -88,7 +88,7 @@ jobs:
           [ -d manager/${{ inputs.manager }} ] || exit 1
           [ -d src/${{ inputs.kernel_version }} ] || exit 1
 
-      - name: Override manager
+      - name: Override manager (deterministic)
         if: ${{ inputs.manager_commit != '' }}
         run: |
           cd manager/${{ inputs.manager }}
@@ -135,7 +135,7 @@ jobs:
           [ -d src/${{ inputs.kernel_version }} ] || exit 1
           rsync -a --delete src/${{ inputs.kernel_version }}/ kernel/common/
 
-      - name: Override kernel commit
+      - name: Override kernel commit (deterministic)
         if: ${{ inputs.kernel_commit != '' }}
         run: |
           cd kernel/common
@@ -155,7 +155,7 @@ jobs:
             if [ -d susfs/.git ]; then
               cd susfs
               git fetch origin "$BR" --depth=1
-              git checkout --force FETCH_HEAD
+              git checkout --detach FETCH_HEAD
               cd ..
             else
               rm -rf susfs
