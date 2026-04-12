@@ -55,25 +55,24 @@ jobs:
         shell: bash
 
     steps:
-      - name: Net + git
+      - name: Setup
         run: |
           set -euo pipefail
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+
           git config --global protocol.version 2
           git config --global core.compression 0
           git config --global fetch.parallel $(nproc)
+
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            git repo zip curl ccache rsync ca-certificates
 
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
           submodules: false
-
-      - name: Deps
-        run: |
-          set -euo pipefail
-          sudo apt-get install -y --no-install-recommends \
-            git repo zip curl ccache rsync ca-certificates
 
       - name: Submodules
         run: |
@@ -88,8 +87,8 @@ jobs:
         run: |
           set -euo pipefail
           cd manager/${{ github.event.inputs.manager }}
-          git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1 || git fetch origin
-          git checkout ${{ github.event.inputs.manager_commit }}
+          git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1
+          git checkout --detach ${{ github.event.inputs.manager_commit }}
 
       - name: Vars
         id: vars
@@ -104,23 +103,24 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}-v1
+          key: repo-${{ steps.vars.outputs.branch }}-${{ github.run_id }}
+          restore-keys: |
+            repo-${{ steps.vars.outputs.branch }}-
 
-      - name: Init repo
+      - name: Repo
         run: |
           set -euo pipefail
           mkdir -p kernel
           cd kernel
+
           repo init -u https://android.googlesource.com/kernel/manifest \
             -b ${{ steps.vars.outputs.branch }} --depth=1 || true
+
           mkdir -p .repo/local_manifests
           echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
 
-      - name: Repo sync
-        run: |
-          set -euo pipefail
-          cd kernel
           export REPO_SYNC_FORCE_IPV4=1
+
           repo sync -c -j$(nproc) \
             --optimized-fetch \
             --no-clone-bundle \
@@ -130,39 +130,44 @@ jobs:
       - name: Inject src
         run: |
           set -euo pipefail
-          rsync -a --delete --info=progress2 \
+          rsync -a --delete --no-inc-recursive \
             src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
-      - name: Apply SUSFS
-        if: ${{ github.event.inputs.susfs == 'yes' }}
+      - name: Apply patches
         run: |
           set -euo pipefail
-          SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
 
-          git clone --filter=blob:none https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-          cd susfs4ksu
-
-          if [ -n "${{ github.event.inputs.susfs_commit }}" ]; then
-            git fetch origin ${{ github.event.inputs.susfs_commit }} --depth=1 || true
-            git checkout ${{ github.event.inputs.susfs_commit }}
-          else
-            git checkout $SUSFS_BRANCH
-          fi
-
-          cd ../kernel/common
-          cp -r ../../susfs4ksu/kernel_patches/fs/* fs/
-          cp -r ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
-          patch -p1 < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
-
-      - name: Apply KSU
-        run: |
-          set -euo pipefail
           cd kernel/common
           bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
 
-      - name: Force config
+          if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
+            cd $GITHUB_WORKSPACE
+
+            SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
+
+            git clone --filter=blob:none --no-tags https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+            cd susfs4ksu
+
+            if [ -n "${{ github.event.inputs.susfs_commit }}" ]; then
+              git fetch origin ${{ github.event.inputs.susfs_commit }} --depth=1
+              git checkout --detach ${{ github.event.inputs.susfs_commit }}
+            else
+              git fetch origin $SUSFS_BRANCH --depth=1
+              git checkout --detach FETCH_HEAD
+            fi
+
+            cd ../kernel/common
+
+            cp ../../susfs4ksu/kernel_patches/fs/* fs/
+            cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
+
+            patch -p1 --forward --silent < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
+          fi
+
+      - name: Config + ccache
         run: |
           set -euo pipefail
+
           DEFCONFIG=$(find kernel/common -path "*/arch/arm64/configs/gki_defconfig" -print -quit)
           [ -z "$DEFCONFIG" ] && exit 1
 
@@ -206,9 +211,6 @@ jobs:
               ;;
           esac
 
-      - name: Ccache
-        run: |
-          set -euo pipefail
           export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export CCACHE_COMPRESS=1
           export CCACHE_MAXSIZE=5G
@@ -217,7 +219,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ github.event.inputs.kernel_version }}-v1
+          key: ccache-${{ github.event.inputs.kernel_version }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ github.event.inputs.kernel_version }}-
 
       - name: Build
         run: |
@@ -225,6 +229,7 @@ jobs:
           cd kernel
           export USE_CCACHE=1
           export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
+          export CC="ccache clang"
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR=$(pwd)/out
           export MAKEFLAGS="-j$(nproc)"
@@ -234,6 +239,7 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
+
           git clone --depth=1 --filter=blob:none https://github.com/DikyVinus/AnyKernel3 AnyKernel3
 
           IMAGE=$(find kernel/out/dist -name "Image*" -print -quit)
