@@ -6,7 +6,7 @@ on:
       kernel_version:
         type: choice
         required: true
-        options: ["5.10", "6.1", "6.6"]
+        options: ["5.10","6.1","6.6"]
 
       manager:
         type: choice
@@ -26,7 +26,7 @@ on:
       susfs:
         type: choice
         required: true
-        options: ["yes", "no"]
+        options: ["yes","no"]
 
       susfs_commit:
         required: false
@@ -35,7 +35,7 @@ on:
       lto_mode:
         type: choice
         required: true
-        options: ["thin", "full", "none"]
+        options: ["thin","full","none"]
 
 jobs:
   build:
@@ -51,10 +51,10 @@ jobs:
       CC: "ccache clang"
 
     steps:
-      - name: Setup
+      - name: setup
         run: |
-          set -euxo pipefail
-          echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etczipi.conf
+          set -euo pipefail
+          echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
           git config --global protocol.version 2
           git config --global fetch.parallel $(nproc)
@@ -66,60 +66,56 @@ jobs:
           fetch-depth: 1
           submodules: false
 
-      - name: Submodules
+      - name: submodules
         run: |
-          set -euxo pipefail
-          git -c submodule.fetchJobs=$(nproc) submodule update --init --depth=1 --filter=blob:none src/${{ github.event.inputs.kernel_version }} manager/${{ github.event.inputs.manager }}
+          set -euo pipefail
+          git -c submodule.fetchJobs=$(nproc) submodule update \
+            --init --depth=1 --filter=blob:none \
+            src/${{ github.event.inputs.kernel_version }} \
+            manager/${{ github.event.inputs.manager }}
 
-      - name: Manager override
+      - name: manager pin
         if: ${{ github.event.inputs.manager_commit != '' }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           cd manager/${{ github.event.inputs.manager }}
           git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1
           git checkout --detach ${{ github.event.inputs.manager_commit }}
 
-      - name: Vars
+      - name: vars
         id: vars
         run: |
           case "${{ github.event.inputs.kernel_version }}" in
             5.10) echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT; echo "android=android12" >> $GITHUB_OUTPUT ;;
-            6.1) echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT; echo "android=android14" >> $GITHUB_OUTPUT ;;
-            6.6) echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT; echo "android=android15" >> $GITHUB_OUTPUT ;;
+            6.1)  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT; echo "android=android14" >> $GITHUB_OUTPUT ;;
+            6.6)  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT; echo "android=android15" >> $GITHUB_OUTPUT ;;
           esac
 
-      - uses: actions/cache@v4
-        with:
-          path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}
-          restore-keys: |
-            repo-${{ steps.vars.outputs.branch }}-
-
-      - name: Sync kernel
+      - name: sync
         run: |
-          set -euxo pipefail
-          mkdir -p kernel
-          cd kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.vars.outputs.branch }} --depth=1
+          set -euo pipefail
+          mkdir -p kernel && cd kernel
+          repo init -u https://android.googlesource.com/kernel/manifest \
+            -b ${{ steps.vars.outputs.branch }} --depth=1
           mkdir -p .repo/local_manifests
           echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
           repo sync -c -j$(nproc) --optimized-fetch --no-clone-bundle --prune --fail-fast
 
-      - name: Inject source
+      - name: inject
         run: |
-          set -euxo pipefail
-          rsync -a --delete --no-inc-recursive src/${{ github.event.inputs.kernel_version }}/ kernel/common/
+          set -euo pipefail
+          rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ github.event.inputs.kernel_version }}
+          key: ccache-${{ github.event.inputs.kernel_version }}-final
           restore-keys: |
             ccache-${{ github.event.inputs.kernel_version }}-
 
-      - name: Build
+      - name: build
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           cd kernel/common
           bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
@@ -140,57 +136,76 @@ jobs:
             cd kernel/common
             cp ../../susfs4ksu/kernel_patches/fs/* fs/
             cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
-            patch -p1 --forward --reject-file=- < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
+
+            patch -p1 < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
+
             test -f fs/susfs.c
+
+            grep -R "config KSU_SUSFS" . >/dev/null || {
+              echo 'source "fs/Kconfig"' >> fs/Kconfig
+            }
           fi
 
           cd ..
-          export ARCH=arm64
 
+          export ARCH=arm64
           make -C common O=out gki_defconfig
 
-          FRAG=common/fragment.config
-          : > "$FRAG"
-
-          echo "CONFIG_KSU=y" >> "$FRAG"
+          cat > common/fragment.config <<EOF
+CONFIG_KSU=y
+EOF
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            echo "CONFIG_KSU_SUSFS=y" >> "$FRAG"
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$FRAG"
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$FRAG"
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$FRAG"
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$FRAG"
-            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$FRAG"
-            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$FRAG"
+            cat >> common/fragment.config <<EOF
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_KSU_SUSFS_SUS_MAP=y
+EOF
           fi
 
           case "${{ github.event.inputs.lto_mode }}" in
             thin)
-              echo "CONFIG_LTO_CLANG=y" >> "$FRAG"
-              echo "CONFIG_LTO_CLANG_THIN=y" >> "$FRAG"
-              echo "# CONFIG_LTO_CLANG_FULL is not set" >> "$FRAG"
+              cat >> common/fragment.config <<EOF
+CONFIG_LTO_CLANG=y
+CONFIG_LTO_CLANG_THIN=y
+# CONFIG_LTO_CLANG_FULL is not set
+EOF
               ;;
             full)
-              echo "CONFIG_LTO_CLANG=y" >> "$FRAG"
-              echo "CONFIG_LTO_CLANG_FULL=y" >> "$FRAG"
-              echo "# CONFIG_LTO_CLANG_THIN is not set" >> "$FRAG"
+              cat >> common/fragment.config <<EOF
+CONFIG_LTO_CLANG=y
+CONFIG_LTO_CLANG_FULL=y
+# CONFIG_LTO_CLANG_THIN is not set
+EOF
               ;;
             none)
-              echo "# CONFIG_LTO_CLANG is not set" >> "$FRAG"
-              echo "# CONFIG_LTO_CLANG_THIN is not set" >> "$FRAG"
-              echo "# CONFIG_LTO_CLANG_FULL is not set" >> "$FRAG"
+              cat >> common/fragment.config <<EOF
+# CONFIG_LTO_CLANG is not set
+# CONFIG_LTO_CLANG_THIN is not set
+# CONFIG_LTO_CLANG_FULL is not set
+EOF
               ;;
           esac
 
-          common/scripts/kconfig/merge_config.sh -m -O common/out common/arch/arm64/configs/gki_defconfig "$FRAG"
+          if [ -f common/scripts/kconfig/merge_config.sh ]; then
+            common/scripts/kconfig/merge_config.sh -m -O common/out \
+              common/arch/arm64/configs/gki_defconfig \
+              common/fragment.config
+          else
+            scripts/kconfig/merge_config.sh -m -O common/out \
+              common/arch/arm64/configs/gki_defconfig \
+              common/fragment.config
+          fi
 
           make -C common O=out olddefconfig
 
-          CFG=common/out/.config
-          grep CONFIG_KSU=y "$CFG"
-
+          grep CONFIG_KSU=y common/out/.config
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            grep CONFIG_KSU_SUSFS=y "$CFG"
+            grep CONFIG_KSU_SUSFS=y common/out/.config
           fi
 
           ccache -M 5G
@@ -202,12 +217,9 @@ jobs:
 
           bash build/build.sh
 
-          IMAGE=$(find out -name "Image*" -print -quit)
-          test -n "$IMAGE"
-
-      - name: Package
+      - name: package
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 AnyKernel3
           IMAGE=$(find kernel/out -name "Image*" -print -quit)
           install -m644 "$IMAGE" AnyKernel3/
