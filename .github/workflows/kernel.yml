@@ -1,4 +1,4 @@
-name: Kernel Build (Optimized)
+name: Kernel Build
 
 on:
   workflow_dispatch:
@@ -7,7 +7,6 @@ on:
         type: choice
         required: true
         options: ["5.10", "6.1", "6.6"]
-
       manager:
         type: choice
         required: true
@@ -18,20 +17,16 @@ on:
           - ResukiSU
           - Rissu
           - Wild_KSU
-
       manager_commit:
         required: false
         default: ""
-
       susfs:
         type: choice
         required: true
         options: ["yes", "no"]
-
       susfs_commit:
         required: false
         default: ""
-
       lto_mode:
         type: choice
         required: true
@@ -51,42 +46,34 @@ jobs:
       CC: "ccache clang"
 
     steps:
-      - name: System setup
-        run: |
+      - run: |
           set -euo pipefail
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-
           git config --global protocol.version 2
           git config --global fetch.parallel $(nproc)
-
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            git repo rsync zip curl ccache ca-certificates
+          sudo apt-get install -y --no-install-recommends git repo rsync zip curl ccache ca-certificates
 
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          submodules: false
 
-      - name: Init submodules (parallel)
-        run: |
+      - run: |
           set -euo pipefail
           git -c submodule.fetchJobs=$(nproc) submodule update \
             --init --depth=1 --filter=blob:none \
             src/${{ github.event.inputs.kernel_version }} \
             manager/${{ github.event.inputs.manager }}
 
-      - name: Optional manager pin
-        if: ${{ github.event.inputs.manager_commit != '' }}
+      - if: ${{ github.event.inputs.manager_commit != '' }}
         run: |
           set -euo pipefail
           cd manager/${{ github.event.inputs.manager }}
           git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1
           git checkout --detach ${{ github.event.inputs.manager_commit }}
 
-      - name: Resolve branch
-        id: vars
+      - id: vars
         run: |
           case "${{ github.event.inputs.kernel_version }}" in
             5.10) echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT; echo "android=android12" >> $GITHUB_OUTPUT ;;
@@ -97,31 +84,18 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}-opt
-          restore-keys: |
-            repo-${{ steps.vars.outputs.branch }}-
+          key: repo-${{ steps.vars.outputs.branch }}
 
-      - name: Sync kernel (fast)
-        run: |
+      - run: |
           set -euo pipefail
           mkdir -p kernel && cd kernel
-
           repo init -u https://android.googlesource.com/kernel/manifest \
             -b ${{ steps.vars.outputs.branch }} --depth=1
-
           mkdir -p .repo/local_manifests
-          echo '<manifest><remove-project name="kernel/common" /></manifest>' \
-            > .repo/local_manifests/remove-common.xml
+          echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
+          repo sync -c -j$(nproc) --optimized-fetch --no-clone-bundle --prune --fail-fast
 
-          export REPO_SYNC_FORCE_IPV4=1
-          repo sync -c -j$(nproc) \
-            --optimized-fetch \
-            --no-clone-bundle \
-            --prune \
-            --fail-fast
-
-      - name: Inject source (fast rsync)
-        run: |
+      - run: |
           set -euo pipefail
           rsync -a --delete --no-inc-recursive \
             src/${{ github.event.inputs.kernel_version }}/ kernel/common/
@@ -129,24 +103,17 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ github.event.inputs.kernel_version }}-opt
-          restore-keys: |
-            ccache-${{ github.event.inputs.kernel_version }}-
+          key: ccache-${{ github.event.inputs.kernel_version }}
 
-      - name: Build (fused + minimal)
-        run: |
+      - run: |
           set -euo pipefail
 
           cd kernel/common
-
-          # KernelSU
           bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
           test -f drivers/kernelsu/ksu.c
 
-          # SUSFS (latest or pinned)
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
             cd $GITHUB_WORKSPACE
-
             B="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
             git clone --depth=1 -b "$B" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
 
@@ -158,56 +125,40 @@ jobs:
             fi
 
             cd kernel/common
-
             cp ../../susfs4ksu/kernel_patches/fs/* fs/
             cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
-
             patch -p1 < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
           fi
 
           cd ..
 
-          export ARCH=arm64
+          KCONFIG_EXT=""
 
-          # single config pass (no redundant calls)
-          make -C common O=out gki_defconfig
-
-          CFG=common/out/.config
-
-          set_y(){ sed -i "/^$1/d" "$CFG"; sed -i "/^# $1/d" "$CFG"; echo "$1=y" >> "$CFG"; }
-          set_n(){ sed -i "/^$1/d" "$CFG"; sed -i "/^# $1/d" "$CFG"; echo "# $1 is not set" >> "$CFG"; }
-
-          # SUSFS flags
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            set_y CONFIG_KSU_SUSFS
-            set_y CONFIG_KSU_SUSFS_SUS_PATH
-            set_y CONFIG_KSU_SUSFS_SUS_MOUNT
-            set_y CONFIG_KSU_SUSFS_SUS_KSTAT
-            set_y CONFIG_KSU_SUSFS_SPOOF_UNAME
-            set_y CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            set_y CONFIG_KSU_SUSFS_SUS_MAP
+            KCONFIG_EXT+=" CONFIG_KSU_SUSFS=y"
+            KCONFIG_EXT+=" CONFIG_KSU_SUSFS_SUS_PATH=y"
+            KCONFIG_EXT+=" CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+            KCONFIG_EXT+=" CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+            KCONFIG_EXT+=" CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+            KCONFIG_EXT+=" CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+            KCONFIG_EXT+=" CONFIG_KSU_SUSFS_SUS_MAP=y"
           fi
 
-          # LTO
           case "${{ github.event.inputs.lto_mode }}" in
             thin)
-              set_n CONFIG_LTO_CLANG_FULL
-              set_y CONFIG_LTO_CLANG
-              set_y CONFIG_LTO_CLANG_THIN ;;
+              KCONFIG_EXT+=" CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_THIN=y CONFIG_LTO_CLANG_FULL=n"
+              ;;
             full)
-              set_n CONFIG_LTO_CLANG_THIN
-              set_y CONFIG_LTO_CLANG
-              set_y CONFIG_LTO_CLANG_FULL ;;
+              KCONFIG_EXT+=" CONFIG_LTO_CLANG=y CONFIG_LTO_CLANG_FULL=y CONFIG_LTO_CLANG_THIN=n"
+              ;;
             none)
-              set_n CONFIG_LTO_CLANG
-              set_n CONFIG_LTO_CLANG_THIN
-              set_n CONFIG_LTO_CLANG_FULL ;;
+              KCONFIG_EXT+=" CONFIG_LTO_CLANG=n CONFIG_LTO_CLANG_THIN=n CONFIG_LTO_CLANG_FULL=n"
+              ;;
           esac
 
-          # finalize config once
-          make -C common O=out olddefconfig
+          export KCONFIG_EXT
+          export ARCH=arm64
 
-          # build
           ccache -M 5G
 
           export BUILD_CONFIG=common/build.config.gki.aarch64
@@ -217,15 +168,11 @@ jobs:
 
           bash build/build.sh
 
-      - name: Package (smaller zip)
-        run: |
+      - run: |
           set -euo pipefail
-
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 AnyKernel3
-
           IMAGE=$(find kernel/out -name "Image*" -print -quit)
           install -m644 "$IMAGE" AnyKernel3/
-
           cd AnyKernel3
           zip -r9 -q -x '*.git*' -x '*.md' kernel-${{ github.event.inputs.kernel_version }}.zip .
 
