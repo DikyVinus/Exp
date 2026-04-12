@@ -53,16 +53,13 @@ jobs:
     steps:
       - name: Setup
         run: |
-          set -euo pipefail
-          echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
+          set -euxo pipefail
+          echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etczipi.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-
           git config --global protocol.version 2
           git config --global fetch.parallel $(nproc)
-
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            git repo rsync zip curl ccache ca-certificates
+          sudo apt-get install -y --no-install-recommends git repo rsync zip curl ccache ca-certificates
 
       - uses: actions/checkout@v4
         with:
@@ -71,16 +68,13 @@ jobs:
 
       - name: Submodules
         run: |
-          set -euo pipefail
-          git -c submodule.fetchJobs=$(nproc) submodule update \
-            --init --depth=1 --filter=blob:none \
-            src/${{ github.event.inputs.kernel_version }} \
-            manager/${{ github.event.inputs.manager }}
+          set -euxo pipefail
+          git -c submodule.fetchJobs=$(nproc) submodule update --init --depth=1 --filter=blob:none src/${{ github.event.inputs.kernel_version }} manager/${{ github.event.inputs.manager }}
 
       - name: Manager override
         if: ${{ github.event.inputs.manager_commit != '' }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           cd manager/${{ github.event.inputs.manager }}
           git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1
           git checkout --detach ${{ github.event.inputs.manager_commit }}
@@ -90,8 +84,8 @@ jobs:
         run: |
           case "${{ github.event.inputs.kernel_version }}" in
             5.10) echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT; echo "android=android12" >> $GITHUB_OUTPUT ;;
-            6.1)  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT; echo "android=android14" >> $GITHUB_OUTPUT ;;
-            6.6)  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT; echo "android=android15" >> $GITHUB_OUTPUT ;;
+            6.1) echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT; echo "android=android14" >> $GITHUB_OUTPUT ;;
+            6.6) echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT; echo "android=android15" >> $GITHUB_OUTPUT ;;
           esac
 
       - uses: actions/cache@v4
@@ -103,26 +97,18 @@ jobs:
 
       - name: Sync kernel
         run: |
-          set -euo pipefail
-          mkdir -p kernel && cd kernel
-
-          repo init -u https://android.googlesource.com/kernel/manifest \
-            -b ${{ steps.vars.outputs.branch }} --depth=1
-
+          set -euxo pipefail
+          mkdir -p kernel
+          cd kernel
+          repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.vars.outputs.branch }} --depth=1
           mkdir -p .repo/local_manifests
           echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
-
-          repo sync -c -j$(nproc) \
-            --optimized-fetch \
-            --no-clone-bundle \
-            --prune \
-            --fail-fast
+          repo sync -c -j$(nproc) --optimized-fetch --no-clone-bundle --prune --fail-fast
 
       - name: Inject source
         run: |
-          set -euo pipefail
-          rsync -a --delete --no-inc-recursive \
-            src/${{ github.event.inputs.kernel_version }}/ kernel/common/
+          set -euxo pipefail
+          rsync -a --delete --no-inc-recursive src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
       - uses: actions/cache@v4
         with:
@@ -133,16 +119,14 @@ jobs:
 
       - name: Build
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           cd kernel/common
-
           bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
-          test -f drivers/kernelsu/ksu.c || exit 1
+          test -f drivers/kernelsu/ksu.c
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
             cd $GITHUB_WORKSPACE
-
             B="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
             git clone --depth=1 -b "$B" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
 
@@ -154,23 +138,19 @@ jobs:
             fi
 
             cd kernel/common
-
             cp ../../susfs4ksu/kernel_patches/fs/* fs/
             cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
-
-            patch -p1 --forward --reject-file=- \
-              < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
-
-            test -f fs/susfs.c || exit 1
+            patch -p1 --forward --reject-file=- < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
+            test -f fs/susfs.c
+          fi
 
           cd ..
-
           export ARCH=arm64
 
           make -C common O=out gki_defconfig
 
           FRAG=common/fragment.config
-          > "$FRAG"
+          : > "$FRAG"
 
           echo "CONFIG_KSU=y" >> "$FRAG"
 
@@ -202,17 +182,15 @@ jobs:
               ;;
           esac
 
-          scripts/kconfig/merge_config.sh -m -O common/out \
-            common/arch/arm64/configs/gki_defconfig \
-            "$FRAG"
+          scripts/kconfig/merge_config.sh -m -O common/out common/arch/arm64/configs/gki_defconfig "$FRAG"
 
           make -C common O=out olddefconfig
 
           CFG=common/out/.config
-          grep CONFIG_KSU=y "$CFG" >/dev/null || exit 1
+          grep CONFIG_KSU=y "$CFG"
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            grep CONFIG_KSU_SUSFS=y "$CFG" >/dev/null || exit 1
+            grep CONFIG_KSU_SUSFS=y "$CFG"
           fi
 
           ccache -M 5G
@@ -225,17 +203,14 @@ jobs:
           bash build/build.sh
 
           IMAGE=$(find out -name "Image*" -print -quit)
-          [ -n "$IMAGE" ] || exit 1
+          test -n "$IMAGE"
 
       - name: Package
         run: |
-          set -euo pipefail
-
+          set -euxo pipefail
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 AnyKernel3
-
           IMAGE=$(find kernel/out -name "Image*" -print -quit)
           install -m644 "$IMAGE" AnyKernel3/
-
           cd AnyKernel3
           zip -r9 -q -x '*.git*' -x '*.md' kernel-${{ github.event.inputs.kernel_version }}.zip .
 
