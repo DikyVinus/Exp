@@ -88,35 +88,23 @@ jobs:
           cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
           patch -p1 < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
 
-      - name: Config
+      - name: Create config fragment
         run: |
-          set -euo pipefail
-          DEFCONFIG=$(find kernel/common -path "*/arch/arm64/configs/gki_defconfig" | head -n1)
-          [ -z "$DEFCONFIG" ] && exit 1
-
-          set_y() {
-            sed -i "/^$1=/d" "$DEFCONFIG"
-            sed -i "/^# $1 is not set/d" "$DEFCONFIG"
-            echo "$1=y" >> "$DEFCONFIG"
-          }
-
-          set_n() {
-            sed -i "/^$1=/d" "$DEFCONFIG"
-            sed -i "/^# $1 is not set/d" "$DEFCONFIG"
-            echo "# $1 is not set" >> "$DEFCONFIG"
-          }
-
-          set_y CONFIG_KSU_SUSFS
-          set_y CONFIG_KSU_SUSFS_SUS_PATH
-          set_y CONFIG_KSU_SUSFS_SUS_MOUNT
-          set_y CONFIG_KSU_SUSFS_SUS_KSTAT
-          set_y CONFIG_KSU_SUSFS_SPOOF_UNAME
-          set_y CONFIG_KSU_SUSFS_OPEN_REDIRECT
-          set_y CONFIG_KSU_SUSFS_SUS_MAP
-
-          set_n CONFIG_LTO_CLANG_FULL
-          set_y CONFIG_LTO_CLANG
-          set_y CONFIG_LTO_CLANG_THIN
+          cat > $GITHUB_WORKSPACE/susfs.fragment << 'EOF'
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_LTO_CLANG=y
+          CONFIG_LTO_CLANG_THIN=y
+          # CONFIG_LTO_CLANG_FULL is not set
+          EOF
 
       - name: Ccache
         run: |
@@ -136,7 +124,12 @@ jobs:
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR=$(pwd)/out
           export MAKEFLAGS="-j$(nproc)"
+          export KCONFIG_EXT_CONFIG=$GITHUB_WORKSPACE/susfs.fragment
           bash build/build.sh
+
+      - name: Verify SUSFS
+        run: |
+          grep CONFIG_KSU_SUSFS kernel/out/.config || exit 1
 
       - name: Package
         run: |
