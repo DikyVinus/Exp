@@ -37,7 +37,7 @@ on:
       susfs:
         required: true
         type: choice
-        options: ["yes", "no"]
+        options: ["no", "yes"]
 
       susfs_commit:
         required: false
