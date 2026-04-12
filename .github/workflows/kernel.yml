@@ -82,7 +82,7 @@ jobs:
             src/${{ github.event.inputs.kernel_version }} \
             manager/${{ github.event.inputs.manager }}
 
-      - name: Override manager commit
+      - name: Manager commit override
         if: ${{ github.event.inputs.manager_commit != '' }}
         run: |
           set -euo pipefail
@@ -103,11 +103,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}-${{ github.run_id }}
+          key: repo-${{ steps.vars.outputs.branch }}-v1
           restore-keys: |
             repo-${{ steps.vars.outputs.branch }}-
 
-      - name: Repo
+      - name: Repo init + sync
         run: |
           set -euo pipefail
           mkdir -p kernel
@@ -120,18 +120,16 @@ jobs:
           echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
 
           export REPO_SYNC_FORCE_IPV4=1
-
           repo sync -c -j$(nproc) \
             --optimized-fetch \
             --no-clone-bundle \
             --prune \
             --fail-fast
 
-      - name: Inject src
+      - name: Inject source
         run: |
           set -euo pipefail
-          rsync -a --delete --no-inc-recursive \
-            src/${{ github.event.inputs.kernel_version }}/ kernel/common/
+          rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
       - name: Apply patches
         run: |
@@ -145,18 +143,16 @@ jobs:
 
             SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
 
-            git clone --filter=blob:none --no-tags https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-            cd susfs4ksu
+            git clone --depth=1 -b "$SUSFS_BRANCH" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
 
             if [ -n "${{ github.event.inputs.susfs_commit }}" ]; then
+              cd susfs4ksu
               git fetch origin ${{ github.event.inputs.susfs_commit }} --depth=1
               git checkout --detach ${{ github.event.inputs.susfs_commit }}
-            else
-              git fetch origin $SUSFS_BRANCH --depth=1
-              git checkout --detach FETCH_HEAD
+              cd ..
             fi
 
-            cd ../kernel/common
+            cd kernel/common
 
             cp ../../susfs4ksu/kernel_patches/fs/* fs/
             cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
@@ -164,7 +160,7 @@ jobs:
             patch -p1 --forward --silent < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
           fi
 
-      - name: Config + ccache
+      - name: Config + regen + ccache
         run: |
           set -euo pipefail
 
@@ -191,6 +187,9 @@ jobs:
             set_y CONFIG_KSU_SUSFS_SPOOF_UNAME
             set_y CONFIG_KSU_SUSFS_OPEN_REDIRECT
             set_y CONFIG_KSU_SUSFS_SUS_MAP
+            set_y CONFIG_KSU_SUSFS_ENABLE_LOG
+            set_y CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            set_y CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
           fi
 
           case "${{ github.event.inputs.lto_mode }}" in
@@ -211,15 +210,18 @@ jobs:
               ;;
           esac
 
+          cd kernel
+          export ARCH=arm64
+          make -C common O=out gki_defconfig
+
           export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export CCACHE_COMPRESS=1
-          export CCACHE_MAXSIZE=5G
           ccache -M 5G
 
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ github.event.inputs.kernel_version }}-${{ github.run_id }}
+          key: ccache-${{ github.event.inputs.kernel_version }}-v1
           restore-keys: |
             ccache-${{ github.event.inputs.kernel_version }}-
 
