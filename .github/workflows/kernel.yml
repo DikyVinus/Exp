@@ -70,16 +70,16 @@ jobs:
 
       - name: Submodules
         run: |
-          git -c submodule.fetchJobs=1 submodule update \
+          git -c submodule.fetchJobs=$(nproc) submodule update \
             --init --depth=1 --filter=blob:none \
             src/${{ github.event.inputs.kernel_version }} \
             manager/${{ github.event.inputs.manager }}
 
-      - name: Apply manager commit (optional)
+      - name: Override manager commit
         if: ${{ github.event.inputs.manager_commit != '' }}
         run: |
           cd manager/${{ github.event.inputs.manager }}
-          git fetch --depth=1 origin ${{ github.event.inputs.manager_commit }}
+          git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1 || git fetch origin
           git checkout ${{ github.event.inputs.manager_commit }}
 
       - name: Vars
@@ -116,16 +116,17 @@ jobs:
         run: |
           set -euo pipefail
           SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
-          git clone --depth=1 --single-branch https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" susfs4ksu
+
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          cd susfs4ksu
 
           if [ -n "${{ github.event.inputs.susfs_commit }}" ]; then
-            cd susfs4ksu
-            git fetch --depth=1 origin ${{ github.event.inputs.susfs_commit }}
             git checkout ${{ github.event.inputs.susfs_commit }}
-            cd ..
+          else
+            git checkout $SUSFS_BRANCH
           fi
 
-          cd kernel/common
+          cd ../kernel/common
           cp ../../susfs4ksu/kernel_patches/fs/* fs/
           cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
           patch -p1 < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
