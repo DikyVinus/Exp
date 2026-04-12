@@ -39,12 +39,11 @@ jobs:
 
       - name: Deps
         run: |
-          sudo apt install -y git repo zip curl ccache rsync
+          sudo apt-get install -y git repo zip curl ccache rsync
 
       - name: Submodules
         run: |
-          git -c submodule.fetchJobs=1 submodule update --init --depth=1 --filter=blob:none src/${{ github.event.inputs.kernel_version }}
-          git -c submodule.fetchJobs=1 submodule update --init --depth=1 --filter=blob:none manager/${{ github.event.inputs.manager }}
+          git -c submodule.fetchJobs=1 submodule update --init --depth=1 --filter=blob:none src/${{ github.event.inputs.kernel_version }} manager/${{ github.event.inputs.manager }}
 
       - name: Vars
         id: vars
@@ -55,27 +54,24 @@ jobs:
             "6.6")  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT; echo "android=android15" >> $GITHUB_OUTPUT ;;
           esac
 
-      - name: Repo init
+      - uses: actions/cache@v4
+        with:
+          path: kernel/.repo
+          key: repo-${{ steps.vars.outputs.branch }}
+
+      - name: Init + sync repo
         run: |
           mkdir -p kernel
           cd kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b ${{ steps.vars.outputs.branch }} --depth=1 || true
           mkdir -p .repo/local_manifests
           echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
-
-      - uses: actions/cache@v4
-        with:
-          path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}
-
-      - name: Repo sync
-        run: |
-          cd kernel
           export REPO_SYNC_FORCE_IPV4=1
-          repo sync -c -j4 --optimized-fetch --no-clone-bundle --prune --fail-fast
+          repo sync -c -j$(nproc) --optimized-fetch --no-clone-bundle --prune --fail-fast
 
       - name: Inject src
-        run: rsync -a src/${{ github.event.inputs.kernel_version }}/ kernel/common/
+        run: |
+          rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
       - name: Apply KSU
         run: |
@@ -84,9 +80,9 @@ jobs:
 
       - name: Apply SUSFS
         run: |
-          set -e
+          set -euo pipefail
           SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" --depth=1 susfs4ksu
+          git clone --depth=1 --single-branch https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" susfs4ksu
           cd kernel/common
           cp ../../susfs4ksu/kernel_patches/fs/* fs/
           cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
@@ -94,27 +90,33 @@ jobs:
 
       - name: Config
         run: |
-          set -e
+          set -euo pipefail
           DEFCONFIG=$(find kernel/common -path "*/arch/arm64/configs/gki_defconfig" | head -n1)
           [ -z "$DEFCONFIG" ] && exit 1
 
-          set_cfg() {
+          set_y() {
             sed -i "/^$1=/d" "$DEFCONFIG"
             sed -i "/^# $1 is not set/d" "$DEFCONFIG"
             echo "$1=y" >> "$DEFCONFIG"
           }
 
-          set_cfg CONFIG_KSU_SUSFS
-          set_cfg CONFIG_KSU_SUSFS_SUS_PATH
-          set_cfg CONFIG_KSU_SUSFS_SUS_MOUNT
-          set_cfg CONFIG_KSU_SUSFS_SUS_KSTAT
-          set_cfg CONFIG_KSU_SUSFS_SPOOF_UNAME
-          set_cfg CONFIG_KSU_SUSFS_OPEN_REDIRECT
-          set_cfg CONFIG_KSU_SUSFS_SUS_MAP
+          set_n() {
+            sed -i "/^$1=/d" "$DEFCONFIG"
+            sed -i "/^# $1 is not set/d" "$DEFCONFIG"
+            echo "# $1 is not set" >> "$DEFCONFIG"
+          }
 
-          sed -i 's/^CONFIG_LTO_CLANG_FULL=y/# CONFIG_LTO_CLANG_FULL is not set/' "$DEFCONFIG"
-          set_cfg CONFIG_LTO_CLANG
-          set_cfg CONFIG_LTO_CLANG_THIN
+          set_y CONFIG_KSU_SUSFS
+          set_y CONFIG_KSU_SUSFS_SUS_PATH
+          set_y CONFIG_KSU_SUSFS_SUS_MOUNT
+          set_y CONFIG_KSU_SUSFS_SUS_KSTAT
+          set_y CONFIG_KSU_SUSFS_SPOOF_UNAME
+          set_y CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          set_y CONFIG_KSU_SUSFS_SUS_MAP
+
+          set_n CONFIG_LTO_CLANG_FULL
+          set_y CONFIG_LTO_CLANG
+          set_y CONFIG_LTO_CLANG_THIN
 
       - name: Ccache
         run: |
@@ -133,18 +135,19 @@ jobs:
           export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR=$(pwd)/out
+          export MAKEFLAGS="-j$(nproc)"
           bash build/build.sh
 
       - name: Package
         run: |
-          set -e
+          set -euo pipefail
           git clone --depth=1 --filter=blob:none https://github.com/DikyVinus/AnyKernel3 AnyKernel3
-          IMAGE=$(find kernel/out/dist -name "Image*" | head -n1)
-          [ -z "$IMAGE" ] && IMAGE=$(find kernel/out -name "Image*" | head -n1)
+          IMAGE=$(find kernel/out/dist -name "Image*" -print -quit)
+          [ -z "$IMAGE" ] && IMAGE=$(find kernel/out -name "Image*" -print -quit)
           [ -z "$IMAGE" ] && exit 1
           cp "$IMAGE" AnyKernel3/
           cd AnyKernel3
-          zip -r9 kernel-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.manager }}.zip *
+          zip -r9 kernel-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.manager }}.zip .
 
       - uses: actions/upload-artifact@v4
         with:
