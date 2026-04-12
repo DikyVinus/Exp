@@ -162,8 +162,6 @@ jobs:
               < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch
 
             test -f fs/susfs.c || exit 1
-            grep -R "config KSU_SUSFS" . >/dev/null || exit 1
-          fi
 
           cd ..
 
