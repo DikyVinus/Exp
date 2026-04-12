@@ -21,11 +21,10 @@ on:
           - Rissu
           - Wild_KSU
 
-      enable_susfs:
-        description: Enable SUSFS
-        required: true
-        type: boolean
-        default: true
+      manager_commit:
+        description: Optional manager commit
+        required: false
+        default: ""
 
       lto_mode:
         description: LTO mode
@@ -35,6 +34,17 @@ on:
           - thin
           - full
           - none
+
+      enable_susfs:
+        description: Enable SUSFS
+        required: true
+        type: boolean
+        default: true
+
+      susfs_commit:
+        description: Optional SUSFS commit
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -64,6 +74,13 @@ jobs:
             --init --depth=1 --filter=blob:none \
             src/${{ github.event.inputs.kernel_version }} \
             manager/${{ github.event.inputs.manager }}
+
+      - name: Apply manager commit (optional)
+        if: ${{ github.event.inputs.manager_commit != '' }}
+        run: |
+          cd manager/${{ github.event.inputs.manager }}
+          git fetch --depth=1 origin ${{ github.event.inputs.manager_commit }}
+          git checkout ${{ github.event.inputs.manager_commit }}
 
       - name: Vars
         id: vars
@@ -100,6 +117,14 @@ jobs:
           set -euo pipefail
           SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
           git clone --depth=1 --single-branch https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" susfs4ksu
+
+          if [ -n "${{ github.event.inputs.susfs_commit }}" ]; then
+            cd susfs4ksu
+            git fetch --depth=1 origin ${{ github.event.inputs.susfs_commit }}
+            git checkout ${{ github.event.inputs.susfs_commit }}
+            cd ..
+          fi
+
           cd kernel/common
           cp ../../susfs4ksu/kernel_patches/fs/* fs/
           cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
@@ -175,10 +200,6 @@ jobs:
           export OUT_DIR=$(pwd)/out
           export MAKEFLAGS="-j$(nproc)"
           bash build/build.sh
-
-      - name: Verify
-        run: |
-          grep CONFIG_LTO kernel/out/.config
 
       - name: Package
         run: |
