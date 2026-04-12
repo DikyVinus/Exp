@@ -1,16 +1,18 @@
-name: Google Kernel + AK3 Build
+name: Build Kernel
 
 on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: Kernel version
         required: true
         type: choice
         options: ["5.10", "6.1", "6.6"]
 
+      kernel_commit:
+        required: false
+        default: ""
+
       manager:
-        description: KSU manager
         required: true
         type: choice
         options:
@@ -22,42 +24,37 @@ on:
           - Wild_KSU
 
       manager_commit:
-        description: Optional manager commit
         required: false
         default: ""
 
       lto_mode:
-        description: LTO mode
         required: true
         type: choice
-        options:
-          - thin
-          - full
-          - none
+        options: [thin, full, none]
 
       susfs:
-        description: Enable SUSFS
         required: true
         type: choice
         options: ["yes", "no"]
 
       susfs_commit:
-        description: Optional SUSFS commit
         required: false
         default: ""
+
+env:
+  JOBS: ${{ vars.JOBS || 0 }}
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     defaults:
       run:
-        shell: bash
+        shell: bash -euo pipefail
 
     steps:
       - name: Setup
         run: |
-          set -euo pipefail
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
 
@@ -69,191 +66,152 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             git repo zip curl ccache rsync ca-certificates
 
+          echo "JOBS=$(nproc)" >> $GITHUB_ENV
+          echo "USE_CCACHE=1" >> $GITHUB_ENV
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          submodules: false
 
       - name: Submodules
         run: |
-          set -euo pipefail
-          git -c submodule.fetchJobs=$(nproc) submodule update \
+          git -c submodule.fetchJobs=$JOBS submodule update \
             --init --depth=1 --filter=blob:none \
-            src/${{ github.event.inputs.kernel_version }} \
-            manager/${{ github.event.inputs.manager }}
+            src/${{ inputs.kernel_version }} \
+            manager/${{ inputs.manager }}
 
-      - name: Manager commit override
-        if: ${{ github.event.inputs.manager_commit != '' }}
+      - name: Override manager
+        if: ${{ inputs.manager_commit != '' }}
         run: |
-          set -euo pipefail
-          cd manager/${{ github.event.inputs.manager }}
-          git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1
-          git checkout --detach ${{ github.event.inputs.manager_commit }}
+          cd manager/${{ inputs.manager }}
+          git fetch origin ${{ inputs.manager_commit }} --depth=1
+          git checkout --detach FETCH_HEAD
 
-      - name: Vars
+      - name: Resolve branch
         id: vars
         run: |
-          set -euo pipefail
-          case "${{ github.event.inputs.kernel_version }}" in
-            "5.10") echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT; echo "android=android12" >> $GITHUB_OUTPUT ;;
-            "6.1")  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT; echo "android=android14" >> $GITHUB_OUTPUT ;;
-            "6.6")  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT; echo "android=android15" >> $GITHUB_OUTPUT ;;
+          case "${{ inputs.kernel_version }}" in
+            5.10) A=android12 B=common-android12-5.10 ;;
+            6.1)  A=android14 B=common-android14-6.1 ;;
+            6.6)  A=android15 B=common-android15-6.6 ;;
           esac
+          echo "android=$A" >> $GITHUB_OUTPUT
+          echo "branch=$B" >> $GITHUB_OUTPUT
 
       - uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}-v1
+          key: repo-${{ steps.vars.outputs.branch }}-v4
           restore-keys: |
             repo-${{ steps.vars.outputs.branch }}-
 
-      - name: Repo init + sync
+      - name: Sync kernel
         run: |
-          set -euo pipefail
-          mkdir -p kernel
-          cd kernel
+          mkdir -p kernel && cd kernel
 
           repo init -u https://android.googlesource.com/kernel/manifest \
-            -b ${{ steps.vars.outputs.branch }} --depth=1 || true
+            -b ${{ steps.vars.outputs.branch }} --depth=1
 
           mkdir -p .repo/local_manifests
-          echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
+          echo '<manifest><remove-project name="kernel/common"/></manifest>' \
+            > .repo/local_manifests/remove.xml
 
-          export REPO_SYNC_FORCE_IPV4=1
-          repo sync -c -j$(nproc) \
-            --optimized-fetch \
-            --no-clone-bundle \
-            --prune \
-            --fail-fast
+          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j$JOBS \
+            --optimized-fetch --no-clone-bundle --prune --fail-fast
 
       - name: Inject source
+        run: rsync -a --delete src/${{ inputs.kernel_version }}/ kernel/common/
+
+      - name: Override kernel commit
+        if: ${{ inputs.kernel_commit != '' }}
         run: |
-          set -euo pipefail
-          rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
+          cd kernel/common
+          git fetch origin ${{ inputs.kernel_commit }} --depth=1
+          git checkout --detach FETCH_HEAD
 
       - name: Apply patches
         run: |
-          set -euo pipefail
-
           cd kernel/common
-          bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
+          bash ../../manager/${{ inputs.manager }}/kernel/setup.sh
 
-          if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            cd $GITHUB_WORKSPACE
+          if [ "${{ inputs.susfs }}" = yes ]; then
+            cd "$GITHUB_WORKSPACE"
 
-            SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
+            BR="gki-${{ steps.vars.outputs.android }}-${{ inputs.kernel_version }}"
+            git clone --depth=1 -b "$BR" https://gitlab.com/simonpunk/susfs4ksu.git susfs
 
-            git clone --depth=1 -b "$SUSFS_BRANCH" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-
-            if [ -n "${{ github.event.inputs.susfs_commit }}" ]; then
-              cd susfs4ksu
-              git fetch origin ${{ github.event.inputs.susfs_commit }} --depth=1
-              git checkout --detach ${{ github.event.inputs.susfs_commit }}
+            if [ -n "${{ inputs.susfs_commit }}" ]; then
+              cd susfs
+              git fetch origin ${{ inputs.susfs_commit }} --depth=1
+              git checkout --detach FETCH_HEAD
               cd ..
             fi
 
             cd kernel/common
+            rsync -a ../../susfs/kernel_patches/fs/ fs/
+            rsync -a ../../susfs/kernel_patches/include/linux/ include/linux/
 
-            cp ../../susfs4ksu/kernel_patches/fs/* fs/
-            cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
-
-            patch -p1 --forward < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
+            patch -p1 --forward \
+              < ../../susfs/kernel_patches/50_add_susfs_in_$BR.patch || true
           fi
 
-      - name: Config + regen + ccache
+      - name: Configure
         run: |
-          set -euo pipefail
+          DEF=$(find kernel/common -path "*/arch/arm64/configs/gki_defconfig" -print -quit)
+          [ -z "$DEF" ] && exit 1
 
-          DEFCONFIG=$(find kernel/common -path "*/arch/arm64/configs/gki_defconfig" -print -quit)
-          [ -z "$DEFCONFIG" ] && exit 1
-
-          set_y() {
-            sed -i "/^$1=/d" "$DEFCONFIG"
-            sed -i "/^# $1 is not set/d" "$DEFCONFIG"
-            echo "$1=y" >> "$DEFCONFIG"
+          cfg() {
+            sed -i "/^$1=/d;/^# $1 is not set/d" "$DEF"
+            [ "$2" = y ] && echo "$1=y" >> "$DEF" || echo "# $1 is not set" >> "$DEF"
           }
 
-          set_n() {
-            sed -i "/^$1=/d" "$DEFCONFIG"
-            sed -i "/^# $1 is not set/d" "$DEFCONFIG"
-            echo "# $1 is not set" >> "$DEFCONFIG"
-          }
-
-          if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            set_y CONFIG_KSU_SUSFS
-            set_y CONFIG_KSU_SUSFS_SUS_PATH
-            set_y CONFIG_KSU_SUSFS_SUS_MOUNT
-            set_y CONFIG_KSU_SUSFS_SUS_KSTAT
-            set_y CONFIG_KSU_SUSFS_SPOOF_UNAME
-            set_y CONFIG_KSU_SUSFS_OPEN_REDIRECT
-            set_y CONFIG_KSU_SUSFS_SUS_MAP
-            set_y CONFIG_KSU_SUSFS_ENABLE_LOG
-            set_y CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-            set_y CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          if [ "${{ inputs.susfs }}" = yes ]; then
+            for c in CONFIG_KSU_SUSFS{,_SUS_PATH,_SUS_MOUNT,_SUS_KSTAT,_SPOOF_UNAME,_OPEN_REDIRECT,_SUS_MAP,_ENABLE_LOG,_HIDE_KSU_SUSFS_SYMBOLS,_SPOOF_CMDLINE_OR_BOOTCONFIG}; do
+              cfg $c y
+            done
           fi
 
-          case "${{ github.event.inputs.lto_mode }}" in
-            thin)
-              set_n CONFIG_LTO_CLANG_FULL
-              set_y CONFIG_LTO_CLANG
-              set_y CONFIG_LTO_CLANG_THIN
-              ;;
-            full)
-              set_n CONFIG_LTO_CLANG_THIN
-              set_y CONFIG_LTO_CLANG
-              set_y CONFIG_LTO_CLANG_FULL
-              ;;
-            none)
-              set_n CONFIG_LTO_CLANG
-              set_n CONFIG_LTO_CLANG_THIN
-              set_n CONFIG_LTO_CLANG_FULL
-              ;;
+          case "${{ inputs.lto_mode }}" in
+            thin) cfg CONFIG_LTO_CLANG y; cfg CONFIG_LTO_CLANG_THIN y; cfg CONFIG_LTO_CLANG_FULL n ;;
+            full) cfg CONFIG_LTO_CLANG y; cfg CONFIG_LTO_CLANG_FULL y; cfg CONFIG_LTO_CLANG_THIN n ;;
+            none) cfg CONFIG_LTO_CLANG n; cfg CONFIG_LTO_CLANG_THIN n; cfg CONFIG_LTO_CLANG_FULL n ;;
           esac
 
-          cd kernel
-          export ARCH=arm64
-          make -C common O=out gki_defconfig
+          make -C kernel/common O=kernel/out ARCH=arm64 gki_defconfig
 
-          export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export CCACHE_COMPRESS=1
           ccache -M 5G
 
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ github.event.inputs.kernel_version }}-v1
+          key: ccache-${{ inputs.kernel_version }}-v3
           restore-keys: |
-            ccache-${{ github.event.inputs.kernel_version }}-
+            ccache-${{ inputs.kernel_version }}-
 
       - name: Build
         run: |
-          set -euo pipefail
           cd kernel
-          export USE_CCACHE=1
-          export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export CC="ccache clang"
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR=$(pwd)/out
-          export MAKEFLAGS="-j$(nproc)"
-          export NINJA_ARGS="-j$(nproc)"
+          export MAKEFLAGS="-j$JOBS"
+          export NINJA_ARGS="-j$JOBS"
           bash build/build.sh
 
       - name: Package
         run: |
-          set -euo pipefail
+          git clone --depth=1 --filter=blob:none \
+            https://github.com/DikyVinus/AnyKernel3 ak3
 
-          git clone --depth=1 --filter=blob:none https://github.com/DikyVinus/AnyKernel3 AnyKernel3
+          IMG=$(find kernel/out -name "Image*" -print -quit)
+          [ -z "$IMG" ] && exit 1
 
-          IMAGE=$(find kernel/out/dist -name "Image*" -print -quit)
-          [ -z "$IMAGE" ] && IMAGE=$(find kernel/out -name "Image*" -print -quit)
-          [ -z "$IMAGE" ] && exit 1
-
-          install -m644 "$IMAGE" AnyKernel3/
-
-          cd AnyKernel3
-          zip -r9 -q kernel-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.manager }}.zip .
+          install -m644 "$IMG" ak3/
+          cd ak3
+          zip -r9 -q kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kernel-zip
-          path: AnyKernel3/*.zip
+          name: kernel
+          path: ak3/*.zip
