@@ -121,17 +121,22 @@ jobs:
           set -euo pipefail
           rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
-      - name: Build (patch + config inline)
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ github.event.inputs.kernel_version }}-v1
+          restore-keys: |
+            ccache-${{ github.event.inputs.kernel_version }}-
+
+      - name: Build
         run: |
           set -euo pipefail
 
           cd kernel/common
-
           bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
             cd $GITHUB_WORKSPACE
-
             SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
 
             git clone --depth=1 -b "$SUSFS_BRANCH" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
@@ -144,11 +149,11 @@ jobs:
             fi
 
             cd kernel/common
-
             cp ../../susfs4ksu/kernel_patches/fs/* fs/
             cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
 
-            patch -p1 --forward --silent < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
+            patch -p1 --forward --silent < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch \
+              || { echo "SUSFS patch failed"; exit 1; }
           fi
 
           cd ..
@@ -157,6 +162,7 @@ jobs:
           make -C common O=out gki_defconfig
 
           CFG=common/out/.config
+          [ -f "$CFG" ] || { echo "missing .config"; exit 1; }
 
           set_y() {
             sed -i "/^$1=/d" "$CFG"
@@ -216,17 +222,9 @@ jobs:
 
           bash build/build.sh
 
-      - uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: ccache-${{ github.event.inputs.kernel_version }}-v1
-          restore-keys: |
-            ccache-${{ github.event.inputs.kernel_version }}-
-
       - name: Package
         run: |
           set -euo pipefail
-
           git clone --depth=1 --filter=blob:none https://github.com/DikyVinus/AnyKernel3 AnyKernel3
 
           IMAGE=$(find kernel/out/dist -name "Image*" -print -quit)
@@ -240,4 +238,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kname
+          name: kernel-zip
+          path: AnyKernel3/*.zip
