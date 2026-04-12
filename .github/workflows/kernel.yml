@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        shell: bash -euo pipefail
+        shell: bash set -euo pipefail
 
     steps:
       - name: Setup
