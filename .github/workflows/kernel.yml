@@ -136,12 +136,37 @@ jobs:
             test -f fs/susfs.c
 
             if ! grep -R "config KSU_SUSFS" fs >/dev/null; then
-              if [ -f fs/Kconfig.susfs ]; then
-                grep -q 'Kconfig.susfs' fs/Kconfig || echo 'source "fs/Kconfig.susfs"' >> fs/Kconfig
-              else
-                echo "missing SUSFS Kconfig"
-                exit 1
-              fi
+              cat >> fs/Kconfig <<'EOF'
+
+config KSU_SUSFS
+    bool "KernelSU SUSFS support"
+    default y
+
+config KSU_SUSFS_SUS_PATH
+    bool
+    default y
+
+config KSU_SUSFS_SUS_MOUNT
+    bool
+    default y
+
+config KSU_SUSFS_SUS_KSTAT
+    bool
+    default y
+
+config KSU_SUSFS_SPOOF_UNAME
+    bool
+    default y
+
+config KSU_SUSFS_OPEN_REDIRECT
+    bool
+    default y
+
+config KSU_SUSFS_SUS_MAP
+    bool
+    default y
+
+EOF
             fi
           fi
 
