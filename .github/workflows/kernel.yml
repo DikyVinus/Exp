@@ -63,18 +63,9 @@ jobs:
         id: vars
         run: |
           case "${{ github.event.inputs.kernel_version }}" in
-            "5.10")
-              echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT
-              echo "android=android12" >> $GITHUB_OUTPUT
-              ;;
-            "6.1")
-              echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT
-              echo "android=android14" >> $GITHUB_OUTPUT
-              ;;
-            "6.6")
-              echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT
-              echo "android=android15" >> $GITHUB_OUTPUT
-              ;;
+            "5.10") echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT; echo "android=android12" >> $GITHUB_OUTPUT ;;
+            "6.1")  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT; echo "android=android14" >> $GITHUB_OUTPUT ;;
+            "6.6")  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT; echo "android=android15" >> $GITHUB_OUTPUT ;;
           esac
 
       - name: Prepare kernel
@@ -89,18 +80,12 @@ jobs:
       - name: Init repo (no common)
         run: |
           cd kernel
-          repo init \
-            -u https://android.googlesource.com/kernel/manifest \
-            -b ${{ steps.vars.outputs.branch }} \
-            --depth=1 || true
+          repo init -u https://android.googlesource.com/kernel/manifest \
+            -b ${{ steps.vars.outputs.branch }} --depth=1 || true
 
           mkdir -p .repo/local_manifests
-
-          cat > .repo/local_manifests/remove-common.xml << 'EOF'
-          <manifest>
-            <remove-project name="kernel/common" />
-          </manifest>
-          EOF
+          echo '<manifest><remove-project name="kernel/common" /></manifest>' \
+            > .repo/local_manifests/remove-common.xml
 
       - name: Sync repo
         run: |
@@ -112,14 +97,14 @@ jobs:
         run: |
           rsync -a src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
-      # --- SUSFS (before KSU) ---
-      - name: Setup SUSFS
+      # --- SUSFS ---
+      - name: Setup + apply SUSFS
         run: |
+          set -e
+
           SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" --depth=1 susfs4ksu
 
-      - name: Apply SUSFS patches
-        run: |
           cd kernel/common
 
           cp ../../susfs4ksu/kernel_patches/fs/* fs/
@@ -128,20 +113,37 @@ jobs:
           cp ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch ./
           patch -p1 < 50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
 
-      - name: Enable SUSFS config
-        run: |
-          echo 'CONFIG_KSU_SUSFS=y' >> kernel/common/arch/arm64/configs/gki_defconfig
-
-      # --- LTO ---
-      - name: Force ThinLTO
+      - name: Enable SUSFS + LTO config (safe patch)
         run: |
           set -e
+
           DEFCONFIG=$(find kernel/common -type f -path "*/arch/arm64/configs/gki_defconfig" | head -n1)
           [ -z "$DEFCONFIG" ] && exit 1
 
+          add_cfg() {
+            KEY="$1"
+            if grep -q "^$KEY=" "$DEFCONFIG"; then
+              sed -i "s/^$KEY=.*/$KEY=y/" "$DEFCONFIG"
+            elif grep -q "^# $KEY is not set" "$DEFCONFIG"; then
+              sed -i "s/^# $KEY is not set/$KEY=y/" "$DEFCONFIG"
+            else
+              echo "$KEY=y" >> "$DEFCONFIG"
+            fi
+          }
+
+          # SUSFS
+          add_cfg CONFIG_KSU_SUSFS
+          add_cfg CONFIG_KSU_SUSFS_SUS_PATH
+          add_cfg CONFIG_KSU_SUSFS_SUS_MOUNT
+          add_cfg CONFIG_KSU_SUSFS_SUS_KSTAT
+          add_cfg CONFIG_KSU_SUSFS_SPOOF_UNAME
+          add_cfg CONFIG_KSU_SUSFS_OPEN_REDIRECT
+          add_cfg CONFIG_KSU_SUSFS_SUS_MAP
+
+          # LTO
           sed -i 's/^CONFIG_LTO_CLANG_FULL=y/# CONFIG_LTO_CLANG_FULL is not set/' "$DEFCONFIG"
-          grep -q '^CONFIG_LTO_CLANG_THIN=y' "$DEFCONFIG" || echo 'CONFIG_LTO_CLANG_THIN=y' >> "$DEFCONFIG"
-          grep -q '^CONFIG_LTO_CLANG=y' "$DEFCONFIG" || echo 'CONFIG_LTO_CLANG=y' >> "$DEFCONFIG"
+          add_cfg CONFIG_LTO_CLANG
+          add_cfg CONFIG_LTO_CLANG_THIN
 
       # --- KSU LAST ---
       - name: Apply KSU
