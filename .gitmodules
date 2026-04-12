@@ -22,10 +22,6 @@
 	path = manager/KernelSU-4.19
 	url = https://github.com/xxblebleblexx/KernelSU.git
 	branch = main
-[submodule "manager/KernelSU-Next"]
-	path = manager/KernelSU-Next
-	url = https://github.com/pershoot/KernelSU-Next.git
-	branch = stable
 [submodule "manager/Rissu"]
 	path = manager/Rissu
 	url = https://github.com/RapliVx/KernelSU.git
@@ -61,3 +57,6 @@
 [submodule "manager/KowSU"]
 	path = manager/KowSU
 	url = https://github.com/KOWX712/KernelSU
+[submodule "manager/KernelSU-Next"]
+	path = manager/KernelSU-Next
+	url = https://github.com/KernelSU-Next/KernelSU-Next
