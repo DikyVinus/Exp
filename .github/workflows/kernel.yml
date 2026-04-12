@@ -177,38 +177,30 @@ jobs:
           echo "CONFIG_KSU=y" >> "$FRAG"
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            cat >> "$FRAG" <<EOF
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-CONFIG_KSU_SUSFS_SUS_MAP=y
-EOF
+            echo "CONFIG_KSU_SUSFS=y" >> "$FRAG"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$FRAG"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$FRAG"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$FRAG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$FRAG"
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$FRAG"
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$FRAG"
           fi
 
           case "${{ github.event.inputs.lto_mode }}" in
             thin)
-              cat >> "$FRAG" <<EOF
-CONFIG_LTO_CLANG=y
-CONFIG_LTO_CLANG_THIN=y
-# CONFIG_LTO_CLANG_FULL is not set
-EOF
+              echo "CONFIG_LTO_CLANG=y" >> "$FRAG"
+              echo "CONFIG_LTO_CLANG_THIN=y" >> "$FRAG"
+              echo "# CONFIG_LTO_CLANG_FULL is not set" >> "$FRAG"
               ;;
             full)
-              cat >> "$FRAG" <<EOF
-CONFIG_LTO_CLANG=y
-CONFIG_LTO_CLANG_FULL=y
-# CONFIG_LTO_CLANG_THIN is not set
-EOF
+              echo "CONFIG_LTO_CLANG=y" >> "$FRAG"
+              echo "CONFIG_LTO_CLANG_FULL=y" >> "$FRAG"
+              echo "# CONFIG_LTO_CLANG_THIN is not set" >> "$FRAG"
               ;;
             none)
-              cat >> "$FRAG" <<EOF
-# CONFIG_LTO_CLANG is not set
-# CONFIG_LTO_CLANG_THIN is not set
-# CONFIG_LTO_CLANG_FULL is not set
-EOF
+              echo "# CONFIG_LTO_CLANG is not set" >> "$FRAG"
+              echo "# CONFIG_LTO_CLANG_THIN is not set" >> "$FRAG"
+              echo "# CONFIG_LTO_CLANG_FULL is not set" >> "$FRAG"
               ;;
           esac
 
