@@ -146,10 +146,27 @@ jobs:
           export OUT_DIR=$(pwd)/out
           bash build/build.sh
 
-      - name: AnyKernel3
+      - name: Prepare AnyKernel3 + copy image
         run: |
+          set -e
+
           git clone --depth=1 --filter=blob:none https://github.com/DikyVinus/AnyKernel3 AnyKernel3
-          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+
+          IMAGE=$(find kernel/out/dist -type f -name "Image*" | head -n1)
+
+          if [ -z "$IMAGE" ]; then
+            echo "Image not found in dist, fallback search"
+
+            IMAGE=$(find kernel/out -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) | head -n1)
+          fi
+
+          if [ -z "$IMAGE" ]; then
+            echo "kernel image not found"
+            exit 1
+          fi
+
+          echo "Using $IMAGE"
+          cp "$IMAGE" AnyKernel3/
 
       - name: Zip
         run: |
