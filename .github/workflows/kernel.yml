@@ -42,7 +42,6 @@ on:
         default: ""
 
 env:
-  JOBS: ${{ vars.JOBS || 0 }}
   CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 jobs:
@@ -50,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        shell: bash set -euo pipefail
+        shell: bash -euo pipefail {0}
 
     steps:
       - name: Setup
@@ -64,7 +63,13 @@ jobs:
 
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            git repo zip curl ccache rsync ca-certificates
+            git zip curl ccache rsync ca-certificates
+
+          # install repo tool (missing before)
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod +x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
 
           echo "JOBS=$(nproc)" >> $GITHUB_ENV
           echo "USE_CCACHE=1" >> $GITHUB_ENV
@@ -98,13 +103,6 @@ jobs:
           echo "android=$A" >> $GITHUB_OUTPUT
           echo "branch=$B" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache@v4
-        with:
-          path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}-v4
-          restore-keys: |
-            repo-${{ steps.vars.outputs.branch }}-
-
       - name: Sync kernel
         run: |
           mkdir -p kernel && cd kernel
@@ -118,6 +116,13 @@ jobs:
 
           REPO_SYNC_FORCE_IPV4=1 repo sync -c -j$JOBS \
             --optimized-fetch --no-clone-bundle --prune --fail-fast
+
+      - uses: actions/cache@v4
+        with:
+          path: kernel/.repo
+          key: repo-${{ steps.vars.outputs.branch }}-v4
+          restore-keys: |
+            repo-${{ steps.vars.outputs.branch }}-
 
       - name: Inject source
         run: rsync -a --delete src/${{ inputs.kernel_version }}/ kernel/common/
