@@ -46,9 +46,10 @@ jobs:
 
       - name: Install deps
         run: |
+          sudo apt update
           sudo apt install -y git repo zip curl ccache rsync
 
-      - name: Init submodules (minimal)
+      - name: Init submodules
         run: |
           git -c submodule.fetchJobs=1 submodule update \
             --init --depth=1 --filter=blob:none \
@@ -58,13 +59,22 @@ jobs:
             --init --depth=1 --filter=blob:none \
             manager/${{ github.event.inputs.manager }}
 
-      - name: Select branch
-        id: branch
+      - name: Select branch + android version
+        id: vars
         run: |
           case "${{ github.event.inputs.kernel_version }}" in
-            "5.10") echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT ;;
-            "6.1")  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT ;;
-            "6.6")  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT ;;
+            "5.10")
+              echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT
+              echo "android=android12" >> $GITHUB_OUTPUT
+              ;;
+            "6.1")
+              echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT
+              echo "android=android14" >> $GITHUB_OUTPUT
+              ;;
+            "6.6")
+              echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT
+              echo "android=android15" >> $GITHUB_OUTPUT
+              ;;
           esac
 
       - name: Prepare kernel
@@ -74,14 +84,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.branch.outputs.branch }}
+          key: repo-${{ steps.vars.outputs.branch }}
 
       - name: Init repo (no common)
         run: |
           cd kernel
           repo init \
             -u https://android.googlesource.com/kernel/manifest \
-            -b ${{ steps.branch.outputs.branch }} \
+            -b ${{ steps.vars.outputs.branch }} \
             --depth=1 || true
 
           mkdir -p .repo/local_manifests
@@ -92,21 +102,37 @@ jobs:
           </manifest>
           EOF
 
-      - name: Sync Google kernel (optimized)
+      - name: Sync repo
         run: |
           cd kernel
           export REPO_SYNC_FORCE_IPV4=1
-
-          repo sync -c -j4 \
-            --optimized-fetch \
-            --no-clone-bundle \
-            --prune \
-            --fail-fast
+          repo sync -c -j4 --optimized-fetch --no-clone-bundle --prune --fail-fast
 
       - name: Inject kernel source
         run: |
           rsync -a src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
+      # --- SUSFS (before KSU) ---
+      - name: Setup SUSFS
+        run: |
+          SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}"
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" --depth=1 susfs4ksu
+
+      - name: Apply SUSFS patches
+        run: |
+          cd kernel/common
+
+          cp ../../susfs4ksu/kernel_patches/fs/* fs/
+          cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
+
+          cp ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch ./
+          patch -p1 < 50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
+
+      - name: Enable SUSFS config
+        run: |
+          echo 'CONFIG_KSU_SUSFS=y' >> kernel/common/arch/arm64/configs/gki_defconfig
+
+      # --- LTO ---
       - name: Force ThinLTO
         run: |
           set -e
@@ -114,11 +140,10 @@ jobs:
           [ -z "$DEFCONFIG" ] && exit 1
 
           sed -i 's/^CONFIG_LTO_CLANG_FULL=y/# CONFIG_LTO_CLANG_FULL is not set/' "$DEFCONFIG"
-
           grep -q '^CONFIG_LTO_CLANG_THIN=y' "$DEFCONFIG" || echo 'CONFIG_LTO_CLANG_THIN=y' >> "$DEFCONFIG"
           grep -q '^CONFIG_LTO_CLANG=y' "$DEFCONFIG" || echo 'CONFIG_LTO_CLANG=y' >> "$DEFCONFIG"
-          grep -q '^CONFIG_CFI_CLANG=y' "$DEFCONFIG" || echo 'CONFIG_CFI_CLANG=y' >> "$DEFCONFIG"
 
+      # --- KSU LAST ---
       - name: Apply KSU
         run: |
           cd kernel/common
@@ -148,18 +173,12 @@ jobs:
       - name: Prepare AnyKernel3 + copy image
         run: |
           set -e
-
           git clone --depth=1 --filter=blob:none https://github.com/DikyVinus/AnyKernel3 AnyKernel3
 
           IMAGE=$(find kernel/out/dist -type f -name "Image*" | head -n1)
-
-          if [ -z "$IMAGE" ]; then
-            IMAGE=$(find kernel/out -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) | head -n1)
-          fi
-
+          [ -z "$IMAGE" ] && IMAGE=$(find kernel/out -type f -name "Image*" | head -n1)
           [ -z "$IMAGE" ] && exit 1
 
-          echo "Using $IMAGE"
           cp "$IMAGE" AnyKernel3/
 
       - name: Zip
