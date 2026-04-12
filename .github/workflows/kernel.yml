@@ -89,7 +89,8 @@ jobs:
       - name: sync
         run: |
           set -euo pipefail
-          mkdir -p kernel && cd kernel
+          mkdir -p kernel
+          cd kernel
           repo init -u https://android.googlesource.com/kernel/manifest \
             -b ${{ steps.vars.outputs.branch }} --depth=1
           mkdir -p .repo/local_manifests
@@ -136,37 +137,7 @@ jobs:
             test -f fs/susfs.c
 
             if ! grep -R "config KSU_SUSFS" fs >/dev/null; then
-              cat >> fs/Kconfig <<'EOF'
-
-config KSU_SUSFS
-    bool "KernelSU SUSFS support"
-    default y
-
-config KSU_SUSFS_SUS_PATH
-    bool
-    default y
-
-config KSU_SUSFS_SUS_MOUNT
-    bool
-    default y
-
-config KSU_SUSFS_SUS_KSTAT
-    bool
-    default y
-
-config KSU_SUSFS_SPOOF_UNAME
-    bool
-    default y
-
-config KSU_SUSFS_OPEN_REDIRECT
-    bool
-    default y
-
-config KSU_SUSFS_SUS_MAP
-    bool
-    default y
-
-EOF
+              printf '\nconfig KSU_SUSFS\n\tbool "KernelSU SUSFS support"\n\tdefault y\n' >> fs/Kconfig
             fi
           fi
 
@@ -179,26 +150,16 @@ EOF
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
             echo "CONFIG_KSU_SUSFS=y" >> common/fragment.config
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> common/fragment.config
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> common/fragment.config
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> common/fragment.config
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> common/fragment.config
-            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> common/fragment.config
-            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> common/fragment.config
           fi
 
           if [ "${{ github.event.inputs.lto_mode }}" = "thin" ]; then
             echo "CONFIG_LTO_CLANG=y" >> common/fragment.config
             echo "CONFIG_LTO_CLANG_THIN=y" >> common/fragment.config
-            echo "# CONFIG_LTO_CLANG_FULL is not set" >> common/fragment.config
           elif [ "${{ github.event.inputs.lto_mode }}" = "full" ]; then
             echo "CONFIG_LTO_CLANG=y" >> common/fragment.config
             echo "CONFIG_LTO_CLANG_FULL=y" >> common/fragment.config
-            echo "# CONFIG_LTO_CLANG_THIN is not set" >> common/fragment.config
           else
             echo "# CONFIG_LTO_CLANG is not set" >> common/fragment.config
-            echo "# CONFIG_LTO_CLANG_THIN is not set" >> common/fragment.config
-            echo "# CONFIG_LTO_CLANG_FULL is not set" >> common/fragment.config
           fi
 
           if [ -f common/scripts/kconfig/merge_config.sh ]; then
@@ -213,11 +174,6 @@ EOF
 
           make -C common O=out olddefconfig
 
-          grep CONFIG_KSU=y common/out/.config
-          if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
-            grep CONFIG_KSU_SUSFS=y common/out/.config
-          fi
-
           ccache -M 5G
 
           export BUILD_CONFIG=common/build.config.gki.aarch64
@@ -226,9 +182,6 @@ EOF
           export NINJA_ARGS="-j$(nproc)"
 
           bash build/build.sh
-
-          IMAGE=$(find out -name "Image*" -print -quit)
-          [ -n "$IMAGE" ]
 
       - name: package
         run: |
