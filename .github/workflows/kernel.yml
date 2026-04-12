@@ -15,7 +15,9 @@ on:
       manager:
         required: true
         type: choice
+        default: Vanilla
         options:
+          - Vanilla
           - KernelSU
           - KowSU
           - KernelSU-Next
@@ -67,7 +69,7 @@ jobs:
             bc bison flex libssl-dev libelf-dev python3 dwarves
 
           mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod +x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
@@ -82,18 +84,24 @@ jobs:
         run: |
           git -c submodule.fetchJobs=$JOBS submodule update \
             --init --depth=1 --filter=blob:none \
-            src/${{ inputs.kernel_version }} \
-            manager/${{ inputs.manager }}
+            src/${{ inputs.kernel_version }}
 
-          [ -d manager/${{ inputs.manager }} ] || exit 1
+          if [ "${{ inputs.manager }}" != "Vanilla" ]; then
+            git -c submodule.fetchJobs=$JOBS submodule update \
+              --init --depth=1 --filter=blob:none \
+              manager/${{ inputs.manager }}
+          fi
+
           [ -d src/${{ inputs.kernel_version }} ] || exit 1
+          if [ "${{ inputs.manager }}" != "Vanilla" ]; then
+            [ -d manager/${{ inputs.manager }} ] || exit 1
+          fi
 
-      - name: Override manager (deterministic)
-        if: ${{ inputs.manager_commit != '' }}
+      - name: Override manager
+        if: ${{ inputs.manager != 'Vanilla' && inputs.manager_commit != '' }}
         run: |
-          cd manager/${{ inputs.manager }}
-          git fetch origin ${{ inputs.manager_commit }} --depth=1
-          git checkout --detach FETCH_HEAD
+          git -C manager/${{ inputs.manager }} fetch origin ${{ inputs.manager_commit }} --depth=1
+          git -C manager/${{ inputs.manager }} checkout --detach FETCH_HEAD
 
       - name: Resolve branch
         id: vars
@@ -108,10 +116,13 @@ jobs:
 
       - name: Init repo
         run: |
-          mkdir -p kernel && cd kernel
+          mkdir -p kernel
+          cd kernel
 
-          repo init -u https://android.googlesource.com/kernel/manifest \
-            -b ${{ steps.vars.outputs.branch }}
+          if [ ! -d .repo ]; then
+            repo init -u https://android.googlesource.com/kernel/manifest \
+              -b ${{ steps.vars.outputs.branch }}
+          fi
 
           mkdir -p .repo/local_manifests
           echo '<manifest><remove-project name="kernel/common"/></manifest>' \
@@ -120,67 +131,65 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}-${{ github.sha }}
+          key: repo-${{ steps.vars.outputs.branch }}
           restore-keys: |
-            repo-${{ steps.vars.outputs.branch }}-
+            repo-${{ steps.vars.outputs.branch }}
 
       - name: Sync kernel
+        working-directory: kernel
         run: |
-          cd kernel
-          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j$JOBS \
-            --optimized-fetch --no-clone-bundle --prune --fail-fast
+          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j$(($JOBS * 2)) \
+            --optimized-fetch --prune --fail-fast \
+            --no-tags --current-branch
 
       - name: Inject source
         run: |
-          [ -d src/${{ inputs.kernel_version }} ] || exit 1
-          rsync -a --delete src/${{ inputs.kernel_version }}/ kernel/common/
+          rsync -a --delete --checksum \
+            src/${{ inputs.kernel_version }}/ kernel/common/
 
-      - name: Override kernel commit (deterministic)
+      - name: Override kernel commit
         if: ${{ inputs.kernel_commit != '' }}
         run: |
-          cd kernel/common
-          git fetch origin ${{ inputs.kernel_commit }} --depth=1
-          git checkout --detach FETCH_HEAD
+          git -C kernel/common fetch origin ${{ inputs.kernel_commit }} --depth=1
+          git -C kernel/common checkout --detach FETCH_HEAD
 
       - name: Apply patches
         run: |
-          cd kernel/common
-          bash ../../manager/${{ inputs.manager }}/kernel/setup.sh
+          if [ "${{ inputs.manager }}" != "Vanilla" ]; then
+            bash manager/${{ inputs.manager }}/kernel/setup.sh
+          fi
 
           if [ "${{ inputs.susfs }}" = yes ]; then
-            cd "$GITHUB_WORKSPACE"
-
             BR="gki-${{ steps.vars.outputs.android }}-${{ inputs.kernel_version }}"
 
-            if [ -d susfs/.git ]; then
-              cd susfs
-              git fetch origin "$BR" --depth=1
-              git checkout --detach FETCH_HEAD
-              cd ..
-            else
-              rm -rf susfs
-              git clone --depth=1 -b "$BR" https://gitlab.com/simonpunk/susfs4ksu.git susfs
-            fi
-
             if [ -n "${{ inputs.susfs_commit }}" ]; then
-              cd susfs
-              git fetch origin ${{ inputs.susfs_commit }} --depth=1
-              git checkout --detach FETCH_HEAD
-              cd ..
+              rm -rf susfs
+              git init susfs
+              git -C susfs remote add origin https://gitlab.com/simonpunk/susfs4ksu.git
+              git -C susfs fetch --depth=1 origin ${{ inputs.susfs_commit }}
+              git -C susfs checkout --detach FETCH_HEAD
+            else
+              if [ -d susfs/.git ]; then
+                git -C susfs fetch origin "$BR" --depth=1
+                git -C susfs checkout --detach FETCH_HEAD
+              else
+                git clone --depth=1 --filter=blob:none -b "$BR" \
+                  https://gitlab.com/simonpunk/susfs4ksu.git susfs
+              fi
             fi
 
-            cd kernel/common
-            rsync -a ../../susfs/kernel_patches/fs/ fs/
-            rsync -a ../../susfs/kernel_patches/include/linux/ include/linux/
+            rsync -a susfs/kernel_patches/fs/ kernel/common/fs/
+            rsync -a susfs/kernel_patches/include/linux/ kernel/common/include/linux/
 
-            patch -p1 --forward \
-              < ../../susfs/kernel_patches/50_add_susfs_in_$BR.patch || true
+            PATCH=$(find susfs/kernel_patches -name "50_add_susfs_in_*.patch" -print -quit)
+            cd kernel/common
+            patch -p1 --forward < "$PATCH" || exit 1
           fi
 
       - name: Configure
         run: |
-          DEF=$(find kernel/common -path "*/arch/arm64/configs/gki_defconfig" -print -quit)
-          [ -z "$DEF" ] && exit 1
+          DEF=kernel/common/arch/arm64/configs/gki_defconfig
+          [ -f "$DEF" ] || exit 1
 
           cfg() {
             sed -i "/^$1=/d;/^# $1 is not set/d" "$DEF"
@@ -203,17 +212,18 @@ jobs:
 
           export CCACHE_COMPRESS=1
           ccache -M 5G
+          ccache -s
 
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ inputs.kernel_version }}-v3
+          key: ccache-${{ inputs.kernel_version }}
           restore-keys: |
-            ccache-${{ inputs.kernel_version }}-
+            ccache-${{ inputs.kernel_version }}
 
       - name: Build
+        working-directory: kernel
         run: |
-          cd kernel
           export CC="ccache clang"
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR=$(pwd)/out
@@ -227,7 +237,7 @@ jobs:
             https://github.com/DikyVinus/AnyKernel3 ak3
 
           IMG=$(find kernel/out -type f \( -name "Image" -o -name "Image.gz" \) | head -n1)
-          [ -z "$IMG" ] && exit 1
+          [ -n "$IMG" ] || exit 1
 
           install -m644 "$IMG" ak3/
           cd ak3
