@@ -1,6 +1,4 @@
-Fully merged, deterministic, no wasted stages, correct config timing, patch + config integrated into build phase.
-
-name: Google Kernel + AK3 Build
+name: Kernel Build
 
 on:
   workflow_dispatch:
@@ -242,5 +240,4 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kernel-zip
-          path: AnyKernel3/*.zip
+          name: kname
