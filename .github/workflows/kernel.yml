@@ -63,9 +63,9 @@ jobs:
 
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            git zip curl ccache rsync ca-certificates
+            git zip curl ccache rsync ca-certificates \
+            bc bison flex libssl-dev libelf-dev python3 dwarves
 
-          # install repo tool (missing before)
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod +x ~/bin/repo
@@ -85,6 +85,9 @@ jobs:
             src/${{ inputs.kernel_version }} \
             manager/${{ inputs.manager }}
 
+          [ -d manager/${{ inputs.manager }} ] || exit 1
+          [ -d src/${{ inputs.kernel_version }} ] || exit 1
+
       - name: Override manager
         if: ${{ inputs.manager_commit != '' }}
         run: |
@@ -103,29 +106,34 @@ jobs:
           echo "android=$A" >> $GITHUB_OUTPUT
           echo "branch=$B" >> $GITHUB_OUTPUT
 
-      - name: Sync kernel
+      - name: Init repo
         run: |
           mkdir -p kernel && cd kernel
 
           repo init -u https://android.googlesource.com/kernel/manifest \
-            -b ${{ steps.vars.outputs.branch }} --depth=1
+            -b ${{ steps.vars.outputs.branch }}
 
           mkdir -p .repo/local_manifests
           echo '<manifest><remove-project name="kernel/common"/></manifest>' \
             > .repo/local_manifests/remove.xml
 
-          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j$JOBS \
-            --optimized-fetch --no-clone-bundle --prune --fail-fast
-
       - uses: actions/cache@v4
         with:
           path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}-v4
+          key: repo-${{ steps.vars.outputs.branch }}-${{ github.sha }}
           restore-keys: |
             repo-${{ steps.vars.outputs.branch }}-
 
+      - name: Sync kernel
+        run: |
+          cd kernel
+          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j$JOBS \
+            --optimized-fetch --no-clone-bundle --prune --fail-fast
+
       - name: Inject source
-        run: rsync -a --delete src/${{ inputs.kernel_version }}/ kernel/common/
+        run: |
+          [ -d src/${{ inputs.kernel_version }} ] || exit 1
+          rsync -a --delete src/${{ inputs.kernel_version }}/ kernel/common/
 
       - name: Override kernel commit
         if: ${{ inputs.kernel_commit != '' }}
@@ -143,7 +151,16 @@ jobs:
             cd "$GITHUB_WORKSPACE"
 
             BR="gki-${{ steps.vars.outputs.android }}-${{ inputs.kernel_version }}"
-            git clone --depth=1 -b "$BR" https://gitlab.com/simonpunk/susfs4ksu.git susfs
+
+            if [ -d susfs/.git ]; then
+              cd susfs
+              git fetch origin "$BR" --depth=1
+              git checkout --force FETCH_HEAD
+              cd ..
+            else
+              rm -rf susfs
+              git clone --depth=1 -b "$BR" https://gitlab.com/simonpunk/susfs4ksu.git susfs
+            fi
 
             if [ -n "${{ inputs.susfs_commit }}" ]; then
               cd susfs
@@ -209,7 +226,7 @@ jobs:
           git clone --depth=1 --filter=blob:none \
             https://github.com/DikyVinus/AnyKernel3 ak3
 
-          IMG=$(find kernel/out -name "Image*" -print -quit)
+          IMG=$(find kernel/out -type f \( -name "Image" -o -name "Image.gz" \) | head -n1)
           [ -z "$IMG" ] && exit 1
 
           install -m644 "$IMG" ak3/
