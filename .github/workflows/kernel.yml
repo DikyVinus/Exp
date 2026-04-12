@@ -152,7 +152,7 @@ jobs:
             cp ../../susfs4ksu/kernel_patches/fs/* fs/
             cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
 
-            patch -p1 --forward --silent < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch \
+            patch -p1 --forward < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch \
               || { echo "SUSFS patch failed"; exit 1; }
           fi
 
@@ -207,7 +207,7 @@ jobs:
               ;;
           esac
 
-          yes "" | make -C common O=out oldconfig
+          make -C common O=out oldconfig
 
           export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export CCACHE_COMPRESS=1
