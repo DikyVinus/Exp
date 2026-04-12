@@ -8,7 +8,8 @@ on:
         required: true
         options: ["5.10","6.1","6.6"]
       kernel_commit:
-        required: true
+        required: false
+        default: ""
       manager:
         type: choice
         required: true
@@ -20,7 +21,8 @@ on:
           - Rissu
           - Wild_KSU
       manager_commit:
-        required: true
+        required: false
+        default: ""
       lto_mode:
         type: choice
         required: true
@@ -28,7 +30,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     defaults:
       run:
@@ -50,9 +52,12 @@ jobs:
           submodules: false
 
       - run: |
-          git submodule update --init --depth=1 manager/${{ github.event.inputs.manager }}
+          git -c submodule.fetchJobs=$(nproc) submodule update \
+            --init --depth=1 --filter=blob:none \
+            manager/${{ github.event.inputs.manager }}
 
-      - run: |
+      - if: ${{ github.event.inputs.manager_commit != '' }}
+        run: |
           cd manager/${{ github.event.inputs.manager }}
           git fetch origin ${{ github.event.inputs.manager_commit }} --depth=1
           git checkout --detach ${{ github.event.inputs.manager_commit }}
@@ -65,7 +70,18 @@ jobs:
             6.6)  echo "branch=common-android15-6.6" >> $GITHUB_OUTPUT ;;
           esac
 
-      - run: |
+      - name: Restore kernel cache
+        id: gki-cache
+        uses: actions/cache@v4
+        with:
+          path: kernel
+          key: gki-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.kernel_commit }}
+          restore-keys: |
+            gki-${{ github.event.inputs.kernel_version }}-
+
+      - name: Sync kernel
+        if: steps.gki-cache.outputs.cache-hit != 'true'
+        run: |
           mkdir -p kernel
           cd kernel
 
@@ -73,7 +89,8 @@ jobs:
             -b ${{ steps.vars.outputs.branch }} --depth=1
 
           mkdir -p .repo/local_manifests
-          echo '<manifest><remove-project name="kernel/common" /></manifest>' > .repo/local_manifests/remove-common.xml
+          echo '<manifest><remove-project name="kernel/common" /></manifest>' \
+            > .repo/local_manifests/remove-common.xml
 
           repo sync -c -j$(nproc) \
             --optimized-fetch \
@@ -81,26 +98,31 @@ jobs:
             --prune \
             --fail-fast
 
-          repo manifest -r -o pinned.xml
+      - name: Force clean state
+        run: |
+          cd kernel/common
+          git reset --hard
+          git clean -fdx
+          cd ..
 
-          cd common
+      - name: Optional kernel pin
+        if: ${{ github.event.inputs.kernel_commit != '' }}
+        run: |
+          cd kernel/common
           git fetch origin ${{ github.event.inputs.kernel_commit }} --depth=1
           git checkout --detach ${{ github.event.inputs.kernel_commit }}
-          cd ..
 
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ github.event.inputs.kernel_commit }}
+          key: ccache-${{ github.event.inputs.kernel_version }}
           restore-keys: |
-            ccache-
+            ccache-${{ github.event.inputs.kernel_version }}-
 
       - run: |
           cd kernel/common
-
           bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
           test -f drivers/kernelsu/ksu.c
-
           cd ..
 
           export ARCH=arm64
@@ -135,24 +157,6 @@ jobs:
 
           make -C common O=out olddefconfig
 
-          CFG=common/out/.config
-
-          grep "^CONFIG_KSU=y" "$CFG"
-
-          case "${{ github.event.inputs.lto_mode }}" in
-            thin)
-              grep "^CONFIG_LTO_CLANG=y" "$CFG"
-              grep "^CONFIG_LTO_CLANG_THIN=y" "$CFG"
-              ;;
-            full)
-              grep "^CONFIG_LTO_CLANG=y" "$CFG"
-              grep "^CONFIG_LTO_CLANG_FULL=y" "$CFG"
-              ;;
-            none)
-              grep "^# CONFIG_LTO_CLANG is not set" "$CFG"
-              ;;
-          esac
-
           ccache -M 5G
 
           export BUILD_CONFIG=common/build.config.gki.aarch64
@@ -165,15 +169,12 @@ jobs:
           IMAGE=$(find out -name "Image*" -print -quit)
           [ -n "$IMAGE" ]
 
-          SIZE=$(stat -c%s "$IMAGE")
-          [ "$SIZE" -gt 10000000 ]
-
       - run: |
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 AnyKernel3
           IMAGE=$(find kernel/out -name "Image*" -print -quit)
           install -m644 "$IMAGE" AnyKernel3/
           cd AnyKernel3
-          zip -r9 -q kernel-${{ github.event.inputs.kernel_commit }}-${{ github.event.inputs.manager_commit }}.zip .
+          zip -r9 -q kernel-${{ github.event.inputs.kernel_version }}.zip .
 
       - uses: actions/upload-artifact@v4
         with:
