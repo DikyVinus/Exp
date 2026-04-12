@@ -156,7 +156,7 @@ jobs:
           export ARCH=arm64
           make -C common O=out gki_defconfig
 
-          CFG=out/.config
+          CFG=common/out/.config
 
           set_y() {
             sed -i "/^$1=/d" "$CFG"
