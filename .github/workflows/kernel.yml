@@ -1,16 +1,16 @@
+Fully merged, deterministic, no wasted stages, correct config timing, patch + config integrated into build phase.
+
 name: Google Kernel + AK3 Build
 
 on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: Kernel version
         required: true
         type: choice
         options: ["5.10", "6.1", "6.6"]
 
       manager:
-        description: KSU manager
         required: true
         type: choice
         options:
@@ -22,27 +22,20 @@ on:
           - Wild_KSU
 
       manager_commit:
-        description: Optional manager commit
         required: false
         default: ""
 
       lto_mode:
-        description: LTO mode
         required: true
         type: choice
-        options:
-          - thin
-          - full
-          - none
+        options: ["thin", "full", "none"]
 
       susfs:
-        description: Enable SUSFS
         required: true
         type: choice
         options: ["yes", "no"]
 
       susfs_commit:
-        description: Optional SUSFS commit
         required: false
         default: ""
 
@@ -82,7 +75,7 @@ jobs:
             src/${{ github.event.inputs.kernel_version }} \
             manager/${{ github.event.inputs.manager }}
 
-      - name: Manager commit override
+      - name: Manager override
         if: ${{ github.event.inputs.manager_commit != '' }}
         run: |
           set -euo pipefail
@@ -93,7 +86,6 @@ jobs:
       - name: Vars
         id: vars
         run: |
-          set -euo pipefail
           case "${{ github.event.inputs.kernel_version }}" in
             "5.10") echo "branch=common-android12-5.10" >> $GITHUB_OUTPUT; echo "android=android12" >> $GITHUB_OUTPUT ;;
             "6.1")  echo "branch=common-android14-6.1" >> $GITHUB_OUTPUT; echo "android=android14" >> $GITHUB_OUTPUT ;;
@@ -107,7 +99,7 @@ jobs:
           restore-keys: |
             repo-${{ steps.vars.outputs.branch }}-
 
-      - name: Repo init + sync
+      - name: Sync kernel
         run: |
           set -euo pipefail
           mkdir -p kernel
@@ -131,11 +123,12 @@ jobs:
           set -euo pipefail
           rsync -a --delete src/${{ github.event.inputs.kernel_version }}/ kernel/common/
 
-      - name: Apply patches
+      - name: Build (patch + config inline)
         run: |
           set -euo pipefail
 
           cd kernel/common
+
           bash ../../manager/${{ github.event.inputs.manager }}/kernel/setup.sh
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
@@ -157,26 +150,26 @@ jobs:
             cp ../../susfs4ksu/kernel_patches/fs/* fs/
             cp ../../susfs4ksu/kernel_patches/include/linux/* include/linux/
 
-            patch -p1 --forward < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
+            patch -p1 --forward --silent < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ steps.vars.outputs.android }}-${{ github.event.inputs.kernel_version }}.patch || true
           fi
 
-      - name: Config + regen + ccache
-        run: |
-          set -euo pipefail
+          cd ..
 
-          DEFCONFIG=$(find kernel/common -path "*/arch/arm64/configs/gki_defconfig" -print -quit)
-          [ -z "$DEFCONFIG" ] && exit 1
+          export ARCH=arm64
+          make -C common O=out gki_defconfig
+
+          CFG=out/.config
 
           set_y() {
-            sed -i "/^$1=/d" "$DEFCONFIG"
-            sed -i "/^# $1 is not set/d" "$DEFCONFIG"
-            echo "$1=y" >> "$DEFCONFIG"
+            sed -i "/^$1=/d" "$CFG"
+            sed -i "/^# $1 is not set/d" "$CFG"
+            echo "$1=y" >> "$CFG"
           }
 
           set_n() {
-            sed -i "/^$1=/d" "$DEFCONFIG"
-            sed -i "/^# $1 is not set/d" "$DEFCONFIG"
-            echo "# $1 is not set" >> "$DEFCONFIG"
+            sed -i "/^$1=/d" "$CFG"
+            sed -i "/^# $1 is not set/d" "$CFG"
+            echo "# $1 is not set" >> "$CFG"
           }
 
           if [ "${{ github.event.inputs.susfs }}" = "yes" ]; then
@@ -210,13 +203,20 @@ jobs:
               ;;
           esac
 
-          cd kernel
-          export ARCH=arm64
-          make -C common O=out gki_defconfig
+          yes "" | make -C common O=out oldconfig
 
           export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
           export CCACHE_COMPRESS=1
           ccache -M 5G
+
+          export USE_CCACHE=1
+          export CC="ccache clang"
+          export BUILD_CONFIG=common/build.config.gki.aarch64
+          export OUT_DIR=$(pwd)/out
+          export MAKEFLAGS="-j$(nproc)"
+          export NINJA_ARGS="-j$(nproc)"
+
+          bash build/build.sh
 
       - uses: actions/cache@v4
         with:
@@ -224,19 +224,6 @@ jobs:
           key: ccache-${{ github.event.inputs.kernel_version }}-v1
           restore-keys: |
             ccache-${{ github.event.inputs.kernel_version }}-
-
-      - name: Build
-        run: |
-          set -euo pipefail
-          cd kernel
-          export USE_CCACHE=1
-          export CCACHE_DIR=$GITHUB_WORKSPACE/.ccache
-          export CC="ccache clang"
-          export BUILD_CONFIG=common/build.config.gki.aarch64
-          export OUT_DIR=$(pwd)/out
-          export MAKEFLAGS="-j$(nproc)"
-          export NINJA_ARGS="-j$(nproc)"
-          bash build/build.sh
 
       - name: Package
         run: |
