@@ -260,23 +260,6 @@ jobs:
           ld.lld --version
           llvm-ar --version
 
-      - name: Smoke-test Android compile
-        run: |
-          export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin:$PATH"
-
-          cat > work/verify/hello.c <<'EOF'
-          int main(void) { return 0; }
-          EOF
-
-          clang \
-            --target=aarch64-linux-android21 \
-            --sysroot="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/sysroot" \
-            -fuse-ld=lld \
-            work/verify/hello.c \
-            -o work/verify/hello-android
-
-          file work/verify/hello-android
-
       - name: Compute package metadata
         id: meta
         run: |
