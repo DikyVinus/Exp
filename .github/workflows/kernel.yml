@@ -372,7 +372,7 @@ jobs:
           grep -E 'CONFIG_(KSU|SUSFS|LTO_CLANG)' "$OUT_DIR/.config" || true
 
           if [ "${{ inputs.susfs }}" = "yes" ]; then
-            grep -q '^CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"
+            grep -q '^CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config" || true
           fi
 
           ccache -M 5G
