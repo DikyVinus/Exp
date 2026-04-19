@@ -42,6 +42,16 @@ on:
         default: ""
         type: string
 
+      package_format:
+        description: "Artifact format"
+        required: true
+        default: 7z
+        type: choice
+        options:
+          - 7z
+          - zip
+          - both
+
       create_release:
         description: "Create GitHub release"
         required: false
@@ -132,9 +142,6 @@ jobs:
           echo "ndk_filename=$filename" >> "$GITHUB_OUTPUT"
           echo "ndk_label=$label" >> "$GITHUB_OUTPUT"
 
-          echo "Resolved NDK URL: $ndk_url"
-          echo "Resolved NDK label: $label"
-
       - name: Resolve latest LLVM Linux ARM64
         id: llvmmeta
         env:
@@ -175,20 +182,15 @@ jobs:
           echo "llvm_file=$llvm_file" >> "$GITHUB_OUTPUT"
           echo "llvm_label=$llvm_label" >> "$GITHUB_OUTPUT"
 
-          echo "Resolved LLVM URL: $llvm_url"
-          echo "Resolved LLVM label: $llvm_label"
-
       - name: Download official NDK
         run: |
           wget -O work/downloads/ndk.zip "${{ steps.ndkmeta.outputs.ndk_url }}"
           test -s work/downloads/ndk.zip
-          file work/downloads/ndk.zip
 
       - name: Download LLVM Linux ARM64
         run: |
           wget -O work/downloads/llvm.tar.xz "${{ steps.llvmmeta.outputs.llvm_url }}"
           test -s work/downloads/llvm.tar.xz
-          file work/downloads/llvm.tar.xz
 
       - name: Extract official NDK
         run: |
@@ -196,7 +198,6 @@ jobs:
           NDK_ROOT="$(find work/src -mindepth 1 -maxdepth 1 -type d | head -n1)"
           test -n "$NDK_ROOT"
           echo "NDK_ROOT=$NDK_ROOT" >> "$GITHUB_ENV"
-          echo "NDK extracted to: $NDK_ROOT"
 
       - name: Extract LLVM Linux ARM64
         run: |
@@ -210,7 +211,6 @@ jobs:
 
           test -d "$LLVM_ROOT/bin"
           echo "LLVM_ROOT=$LLVM_ROOT" >> "$GITHUB_ENV"
-          echo "LLVM extracted to: $LLVM_ROOT"
 
       - name: Create ARM64 NDK host tree
         run: |
@@ -219,12 +219,8 @@ jobs:
           ARM64_HOST="$PREBUILT_DIR/linux-arm64"
 
           test -d "$ORIG_HOST"
-
           rm -rf "$ARM64_HOST"
           cp -a "$ORIG_HOST" "$ARM64_HOST"
-
-          echo "ARM64 host base copied from original NDK host tree"
-          ls -la "$PREBUILT_DIR"
 
       - name: Overlay LLVM ARM64 onto NDK host tree
         run: |
@@ -236,8 +232,6 @@ jobs:
               rsync -a "$LLVM_ROOT/$d"/ "$ARM64_HOST/$d"/
             fi
           done
-
-          find "$ARM64_HOST" -maxdepth 2 | head -150 || true
 
           test -x "$ARM64_HOST/bin/clang"
           test -x "$ARM64_HOST/bin/clang++"
@@ -255,11 +249,6 @@ jobs:
             fi
           done
 
-          # Keep compatibility for scripts that still probe linux-x86_64.
-          if [ ! -e "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" ]; then
-            ln -s linux-arm64 "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
-          fi
-
       - name: Normalize executable permissions
         run: |
           find "$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin" -maxdepth 1 -type f -exec chmod +x {} + || true
@@ -267,8 +256,6 @@ jobs:
       - name: Smoke-test host tools
         run: |
           export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin:$PATH"
-
-          command -v clang
           clang --version
           ld.lld --version
           llvm-ar --version
@@ -331,12 +318,14 @@ jobs:
           echo "FINAL_DIR=$FINAL_DIR" >> "$GITHUB_ENV"
 
       - name: Pack ZIP
+        if: ${{ inputs.package_format == 'zip' || inputs.package_format == 'both' }}
         run: |
           cd work/src
           zip -r9 "$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.zip" "$FINAL_DIR"
           ls -lh "$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.zip"
 
       - name: Pack 7Z
+        if: ${{ inputs.package_format == '7z' || inputs.package_format == 'both' }}
         run: |
           OUT="$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.7z"
           cd work/src
@@ -356,6 +345,7 @@ jobs:
           7z l "$OUT" | head -200 || true
 
       - name: Round-trip verify 7Z
+        if: ${{ inputs.package_format == '7z' || inputs.package_format == 'both' }}
         run: |
           mkdir -p work/verify/7z
           7z x "work/out/${FINAL_DIR}.7z" -owork/verify/7z
@@ -402,10 +392,10 @@ jobs:
             - NDK label: `${{ steps.ndkmeta.outputs.ndk_label }}`
             - Resolved LLVM URL: `${{ steps.llvmmeta.outputs.llvm_url }}`
             - LLVM label: `${{ steps.llvmmeta.outputs.llvm_label }}`
+            - Package format: `${{ inputs.package_format }}`
 
             Notes:
             - Official NDK package was used as the base
             - Original NDK host tree was copied to `linux-arm64`
             - LLVM Linux ARM64 binaries were overlaid on top
             - Host references were patched toward `linux-arm64`
-            - Both `.zip` and `.7z` outputs are attached
