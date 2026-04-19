@@ -53,6 +53,18 @@ on:
         default: ""
         type: string
 
+      llvm_url:
+        description: "Optional override: LLVM Linux x86_64 tar.xz URL"
+        required: false
+        default: ""
+        type: string
+
+      llvm_label:
+        description: "Optional override label for the toolchain"
+        required: false
+        default: ""
+        type: string
+
 env:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
 
@@ -77,7 +89,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             git zip unzip curl wget ccache rsync ca-certificates \
             bc bison flex libssl-dev libelf-dev python3 dwarves \
-            pahole build-essential file xz-utils zstd
+            pahole file xz-utils zstd jq \
+            libarchive-tools patch
 
           mkdir -p ~/bin
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
@@ -93,6 +106,65 @@ jobs:
         with:
           fetch-depth: 1
           submodules: false
+
+      - name: Resolve latest LLVM Linux x86_64
+        id: llvmmeta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          API="https://api.github.com/repos/llvm/llvm-project/releases/latest"
+
+          if [ -n "${{ inputs.llvm_url }}" ]; then
+            llvm_url="${{ inputs.llvm_url }}"
+          else
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "$API" > llvm-latest.json
+
+            llvm_url="$(jq -r '
+              .assets[]
+              | select(.name | test("^LLVM-[0-9][^/]*-Linux-X64\\.tar\\.xz$"))
+              | .browser_download_url
+            ' llvm-latest.json | head -n1)"
+
+            if [ -z "$llvm_url" ] || [ "$llvm_url" = "null" ]; then
+              echo "Failed to resolve latest LLVM Linux x86_64 asset"
+              jq -r '.tag_name, (.assets[]?.name)' llvm-latest.json || true
+              exit 1
+            fi
+          fi
+
+          llvm_file="$(basename "${llvm_url%%\?*}")"
+          if [ -n "${{ inputs.llvm_label }}" ]; then
+            llvm_label="${{ inputs.llvm_label }}"
+          else
+            llvm_label="${llvm_file%.tar.xz}"
+          fi
+
+          echo "llvm_url=$llvm_url" >> "$GITHUB_OUTPUT"
+          echo "llvm_label=$llvm_label" >> "$GITHUB_OUTPUT"
+
+      - name: Download and install LLVM
+        run: |
+          mkdir -p toolchain
+          wget -O llvm.tar.xz "${{ steps.llvmmeta.outputs.llvm_url }}"
+          bsdtar -xpf llvm.tar.xz -C toolchain
+
+          LLVM_ROOT="$(find toolchain -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          test -n "$LLVM_ROOT"
+          test -x "$LLVM_ROOT/bin/clang"
+          test -x "$LLVM_ROOT/bin/ld.lld"
+
+          echo "LLVM_ROOT=$LLVM_ROOT" >> "$GITHUB_ENV"
+          echo "$LLVM_ROOT/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: |
+          command -v clang
+          clang --version
+          ld.lld --version
+          llvm-ar --version
 
       - name: Init submodules
         run: |
@@ -173,6 +245,7 @@ jobs:
             --no-tags --current-branch
 
           test -d common
+          test -f build/build.sh
           ls -la
           git -C common log --oneline -1 || true
 
@@ -184,6 +257,7 @@ jobs:
 
           test -d kernel/common/arch
           test -f kernel/common/Makefile
+          test -f kernel/build/build.sh
 
       - name: Override kernel commit
         if: ${{ inputs.kernel_commit != '' }}
@@ -219,11 +293,7 @@ jobs:
               https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_DIR"
           fi
 
-          echo "SUSFS commit:"
           git -C "$SUSFS_DIR" log --oneline -1
-
-          test -d "$SUSFS_DIR/kernel_patches"
-          find "$SUSFS_DIR/kernel_patches" -maxdepth 3 -type f | sort
 
           test -d "$SUSFS_DIR/kernel_patches/fs"
           test -d "$SUSFS_DIR/kernel_patches/include/linux"
@@ -232,27 +302,25 @@ jobs:
           rsync -a "$SUSFS_DIR/kernel_patches/include/linux/" "kernel/common/include/linux/"
 
           PATCH_FILE="$(find "$SUSFS_DIR/kernel_patches" -type f -name '50_add_susfs_in_*.patch' | sort | head -n1)"
-          if [ -z "$PATCH_FILE" ]; then
-            echo "Could not find SUSFS integration patch"
-            exit 1
-          fi
-
-          echo "Using SUSFS patch: $PATCH_FILE"
+          test -n "$PATCH_FILE"
 
           pushd kernel/common
           patch -p1 --forward --reject-file=- < "$PATCH_FILE"
           popd
 
-          echo "Verifying SUSFS files landed..."
-          test -f kernel/common/fs/susfs.c || true
-          grep -R "susfs" -n kernel/common/fs kernel/common/include/linux kernel/common/Documentation 2>/dev/null | head -100 || true
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ inputs.lto_mode }}-${{ steps.llvmmeta.outputs.llvm_label }}
+          restore-keys: |
+            ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ inputs.lto_mode }}-
+            ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-
+            ccache-${{ inputs.kernel_version }}-
 
       - name: Configure kernel
         run: |
-          DEFCONFIG="kernel/common/arch/arm64/configs/gki_defconfig"
           OUT_DIR="$GITHUB_WORKSPACE/kernel/out"
-
-          test -f "$DEFCONFIG"
 
           make -C kernel/common O="$OUT_DIR" ARCH=arm64 gki_defconfig
 
@@ -307,38 +375,39 @@ jobs:
           grep -E 'CONFIG_(KSU|SUSFS|LTO_CLANG)' "$OUT_DIR/.config" || true
 
           if [ "${{ inputs.susfs }}" = "yes" ]; then
-            if ! grep -q '^CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"; then
-              echo "CONFIG_KSU_SUSFS was not enabled in final .config"
-              echo "Most likely SUSFS Kconfig was not integrated by the selected manager/patch set"
-              exit 1
-            fi
+            grep -q '^CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"
           fi
 
           ccache -M 5G
           ccache -s
 
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ inputs.lto_mode }}
-          restore-keys: |
-            ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-
-            ccache-${{ inputs.kernel_version }}-
-
-      - name: Build kernel
+      - name: Build kernel with repo build.sh and downloaded LLVM
         working-directory: kernel
         run: |
+          export PATH="$LLVM_ROOT/bin:$PATH"
+
           export CC="ccache clang"
+          export HOSTCC="ccache clang"
+          export HOSTCXX="ccache clang++"
+          export LD="ld.lld"
+          export AR="llvm-ar"
+          export NM="llvm-nm"
+          export OBJCOPY="llvm-objcopy"
+          export OBJDUMP="llvm-objdump"
+          export STRIP="llvm-strip"
+          export LLVM=1
+          export LLVM_IAS=1
+
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR="$PWD/out"
+          export DIST_DIR="$PWD/out/dist"
           export MAKEFLAGS="-j$JOBS"
           export NINJA_ARGS="-j$JOBS"
 
           bash build/build.sh
 
           echo "Build outputs:"
-          find out -maxdepth 3 -type f | sort | tail -200
+          find out -maxdepth 4 -type f | sort | tail -200
 
       - name: Package with AnyKernel3
         run: |
@@ -353,7 +422,7 @@ jobs:
 
           install -m644 "$IMG" ak3/
           cd ak3
-          zip -r9 -q "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip" .
+          zip -r9 -q "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ steps.llvmmeta.outputs.llvm_label }}.zip" .
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
