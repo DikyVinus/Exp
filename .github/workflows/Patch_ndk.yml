@@ -58,11 +58,28 @@ on:
         default: true
         type: boolean
 
+      ultra_slim_mode:
+        description: "Aggressively trim host toolchain and non-aarch64 target sysroot"
+        required: true
+        default: false
+        type: boolean
+
       keep_x86_host:
         description: "Keep original linux-x86_64 host tree in final package"
         required: true
         default: false
         type: boolean
+
+      compression_profile:
+        description: "Compression profile for tar.7z"
+        required: true
+        default: balanced
+        type: choice
+        options:
+          - fast
+          - balanced
+          - aggressive
+          - ultra
 
       create_release:
         description: "Create GitHub release"
@@ -234,10 +251,8 @@ jobs:
           rm -rf "$ARM64_HOST"
           mkdir -p "$ARM64_HOST"/{bin,lib,libexec,share}
 
-          # Keep only Android-target sysroot from official NDK
           rsync -a "$ORIG_HOST/sysroot/" "$ARM64_HOST/sysroot/"
 
-          # Some NDKs also use source.properties / notices / wrappers
           [ -f "$ORIG_HOST/source.properties" ] && cp -a "$ORIG_HOST/source.properties" "$ARM64_HOST/"
           [ -f "$ORIG_HOST/NOTICE" ] && cp -a "$ORIG_HOST/NOTICE" "$ARM64_HOST/" || true
 
@@ -245,25 +260,40 @@ jobs:
         run: |
           ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
 
-          keep_bin=(
-            clang
-            clang++
-            clang-cpp
-            ld.lld
-            lld
-            llvm-ar
-            llvm-ranlib
-            llvm-nm
-            llvm-objcopy
-            llvm-objdump
-            llvm-readelf
-            llvm-strip
-            llvm-strings
-            llvm-size
-          )
+          if [ "${{ inputs.ultra_slim_mode }}" = "true" ]; then
+            keep_bin=(
+              clang
+              clang++
+              ld.lld
+              llvm-ar
+              llvm-ranlib
+              llvm-nm
+              llvm-objcopy
+              llvm-objdump
+              llvm-readelf
+              llvm-strip
+            )
+          else
+            keep_bin=(
+              clang
+              clang++
+              clang-cpp
+              ld.lld
+              lld
+              llvm-ar
+              llvm-ranlib
+              llvm-nm
+              llvm-objcopy
+              llvm-objdump
+              llvm-readelf
+              llvm-strip
+              llvm-strings
+              llvm-size
+            )
 
-          if [ "${{ inputs.slim_mode }}" != "true" ]; then
-            keep_bin+=(clangd)
+            if [ "${{ inputs.slim_mode }}" != "true" ]; then
+              keep_bin+=(clangd)
+            fi
           fi
 
           mkdir -p "$ARM64_HOST/bin"
@@ -274,7 +304,6 @@ jobs:
             fi
           done
 
-          # Copy symlink targets too
           for f in "${keep_bin[@]}"; do
             if [ -L "$LLVM_ROOT/bin/$f" ]; then
               target="$(readlink "$LLVM_ROOT/bin/$f")"
@@ -285,7 +314,6 @@ jobs:
             fi
           done
 
-          # Copy clang resource dir
           if [ -d "$LLVM_ROOT/lib/clang" ]; then
             mkdir -p "$ARM64_HOST/lib"
             rsync -a "$LLVM_ROOT/lib/clang/" "$ARM64_HOST/lib/clang/"
@@ -306,7 +334,7 @@ jobs:
             "$ARM64_HOST/bin/llvm-strip"
           )
 
-          touch work/needed-libs.txt
+          : > work/needed-libs.txt
 
           for b in "${needed_bins[@]}"; do
             [ -e "$b" ] || continue
@@ -324,9 +352,6 @@ jobs:
             fi
           done < work/needed-libs.txt
 
-          # Some LLVM bundles place runtime libs under lib/
-          find "$ARM64_HOST/lib" -maxdepth 2 -type f | sort || true
-
       - name: Patch host references
         run: |
           HOST_OLD="linux-x86_64"
@@ -341,7 +366,7 @@ jobs:
           done
 
       - name: Prune extras from ARM64 host
-        if: ${{ inputs.slim_mode }}
+        if: ${{ inputs.slim_mode || inputs.ultra_slim_mode }}
         run: |
           ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
 
@@ -359,23 +384,80 @@ jobs:
           find "$ARM64_HOST/lib" -type f -name '*.a' -delete || true
           find "$ARM64_HOST/lib" -type f -name '*.la' -delete || true
 
+          if [ "${{ inputs.ultra_slim_mode }}" = "true" ]; then
+            find "$ARM64_HOST/bin" -maxdepth 1 -type f \
+              ! -name clang \
+              ! -name clang++ \
+              ! -name ld.lld \
+              ! -name llvm-ar \
+              ! -name llvm-ranlib \
+              ! -name llvm-nm \
+              ! -name llvm-objcopy \
+              ! -name llvm-objdump \
+              ! -name llvm-readelf \
+              ! -name llvm-strip \
+              -delete || true
+
+            find "$ARM64_HOST/bin" -maxdepth 1 -type l \
+              ! -name clang \
+              ! -name clang++ \
+              ! -name ld.lld \
+              ! -name llvm-ar \
+              ! -name llvm-ranlib \
+              ! -name llvm-nm \
+              ! -name llvm-objcopy \
+              ! -name llvm-objdump \
+              ! -name llvm-readelf \
+              ! -name llvm-strip \
+              -delete || true
+          fi
+
+      - name: Prune sysroot to aarch64 only in ultra slim mode
+        if: ${{ inputs.ultra_slim_mode }}
+        run: |
+          SYSROOT="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/sysroot"
+
+          find "$SYSROOT/usr/lib" -mindepth 1 -maxdepth 1 -type d | while read -r d; do
+            base="$(basename "$d")"
+            case "$base" in
+              aarch64-linux-android|clang)
+                ;;
+              *)
+                rm -rf "$d"
+                ;;
+            esac
+          done
+
+          find "$SYSROOT/usr/include" -maxdepth 1 -type d -name 'i686-linux-android*' -exec rm -rf {} + || true
+          find "$SYSROOT/usr/include" -maxdepth 1 -type d -name 'x86_64-linux-android*' -exec rm -rf {} + || true
+          find "$SYSROOT/usr/include" -maxdepth 1 -type d -name 'arm-linux-androideabi*' -exec rm -rf {} + || true
+
       - name: Strip host binaries and libs
         run: |
           ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
 
           find "$ARM64_HOST/bin" -maxdepth 1 -type f -exec chmod +x {} + || true
 
-          while read -r f; do
-            file "$f" | grep -q 'ELF' || continue
-            llvm-strip "$f" 2>/dev/null || true
-          done < <(find "$ARM64_HOST/bin" "$ARM64_HOST/lib" -type f 2>/dev/null)
+          STRIP_TOOL=""
+          if [ -x "$ARM64_HOST/bin/llvm-strip" ]; then
+            STRIP_TOOL="$ARM64_HOST/bin/llvm-strip"
+          elif command -v llvm-strip >/dev/null 2>&1; then
+            STRIP_TOOL="$(command -v llvm-strip)"
+          fi
+
+          if [ -n "$STRIP_TOOL" ]; then
+            while read -r f; do
+              file "$f" | grep -q 'ELF' || continue
+              "$STRIP_TOOL" "$f" 2>/dev/null || true
+            done < <(find "$ARM64_HOST/bin" "$ARM64_HOST/lib" -type f 2>/dev/null)
+          fi
 
       - name: Remove duplicate x86 host tree from final package
         if: ${{ inputs.keep_x86_host != true }}
         run: |
           rm -rf "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
 
-      - name: Size report
+      - name: Inspect biggest files
         run: |
           echo "Top-level size:"
           du -sh "$NDK_ROOT"/* 2>/dev/null | sort -h || true
@@ -385,6 +467,12 @@ jobs:
           echo
           echo "ARM64 host detail:"
           du -sh "$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"/* 2>/dev/null | sort -h || true
+          echo
+          echo "Biggest files in bin:"
+          find "$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin" -maxdepth 1 -type f -printf '%s %p\n' | sort -n | tail -40 || true
+          echo
+          echo "Biggest files in sysroot:"
+          find "$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/sysroot" -type f -printf '%s %p\n' | sort -n | tail -40 || true
 
       - name: Compute package metadata
         id: meta
@@ -399,6 +487,7 @@ jobs:
 
           suffix="linux-arm64"
           [ "${{ inputs.slim_mode }}" = "true" ] && suffix="${suffix}-slim"
+          [ "${{ inputs.ultra_slim_mode }}" = "true" ] && suffix="${suffix}-ultraslim"
 
           if [ -n "${{ inputs.package_name }}" ]; then
             base="${{ inputs.package_name }}"
@@ -429,6 +518,36 @@ jobs:
 
           echo "FINAL_DIR=$FINAL_DIR" >> "$GITHUB_ENV"
 
+      - name: Resolve compression settings
+        id: compression
+        run: |
+          case "${{ inputs.compression_profile }}" in
+            fast)
+              echo "mx=5" >> "$GITHUB_OUTPUT"
+              echo "mfb=64" >> "$GITHUB_OUTPUT"
+              echo "md=64m" >> "$GITHUB_OUTPUT"
+              ;;
+            balanced)
+              echo "mx=7" >> "$GITHUB_OUTPUT"
+              echo "mfb=128" >> "$GITHUB_OUTPUT"
+              echo "md=128m" >> "$GITHUB_OUTPUT"
+              ;;
+            aggressive)
+              echo "mx=9" >> "$GITHUB_OUTPUT"
+              echo "mfb=273" >> "$GITHUB_OUTPUT"
+              echo "md=256m" >> "$GITHUB_OUTPUT"
+              ;;
+            ultra)
+              echo "mx=9" >> "$GITHUB_OUTPUT"
+              echo "mfb=273" >> "$GITHUB_OUTPUT"
+              echo "md=512m" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unknown compression profile"
+              exit 1
+              ;;
+          esac
+
       - name: Pack ZIP
         if: ${{ inputs.package_format == 'zip' || inputs.package_format == 'both' }}
         run: |
@@ -452,9 +571,9 @@ jobs:
           7z a "$OUT" "$TAR_PATH" \
             -t7z \
             -m0=lzma2 \
-            -mx=9 \
-            -mfb=273 \
-            -md=512m \
+            -mx=${{ steps.compression.outputs.mx }} \
+            -mfb=${{ steps.compression.outputs.mfb }} \
+            -md=${{ steps.compression.outputs.md }} \
             -ms=on \
             -mmt=2
 
@@ -502,7 +621,9 @@ jobs:
             - Resolved LLVM URL: `${{ steps.llvmmeta.outputs.llvm_url }}`
             - LLVM label: `${{ steps.llvmmeta.outputs.llvm_label }}`
             - Slim mode: `${{ inputs.slim_mode }}`
+            - Ultra slim mode: `${{ inputs.ultra_slim_mode }}`
             - Keep x86 host: `${{ inputs.keep_x86_host }}`
+            - Compression profile: `${{ inputs.compression_profile }}`
             - Package format: `${{ inputs.package_format }}`
 
             Notes:
@@ -510,4 +631,5 @@ jobs:
             - ARM64 host tree is built from scratch
             - Only selected LLVM tools/resources are copied
             - Duplicate linux-x86_64 host tree can be removed
+            - Ultra slim mode prunes non-aarch64 target sysroot content
             - Unix-safe compressed output is emitted as `.tar.7z`
