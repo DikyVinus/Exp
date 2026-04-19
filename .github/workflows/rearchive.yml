@@ -7,11 +7,39 @@ on:
         description: "Local repo path or URL to archive"
         required: true
         type: string
+
       output_name:
-        description: "Base name for output .7z"
+        description: "Optional base name for output .7z (defaults to original source filename without extension)"
         required: false
-        default: "repacked"
+        default: ""
         type: string
+
+      create_release:
+        description: "Create a GitHub Release and upload the .7z"
+        required: false
+        default: false
+        type: boolean
+
+      create_tag:
+        description: "Create and push a git tag"
+        required: false
+        default: false
+        type: boolean
+
+      tag_name:
+        description: "Optional full tag name override (defaults to auto-generated)"
+        required: false
+        default: ""
+        type: string
+
+      release_name:
+        description: "Optional release title override (defaults to auto-generated)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
   rearchive:
@@ -20,6 +48,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install tools
         shell: bash
@@ -46,6 +76,7 @@ jobs:
           mkdir -p work/input work/extracted work/output work/verify
 
       - name: Fetch source archive
+        id: fetch
         shell: bash
         run: |
           set -euo pipefail
@@ -72,13 +103,20 @@ jobs:
               echo "wget failed, retrying with curl"
               curl -fL --retry 3 --retry-delay 2 -o "$DEST" "$SRC"
             fi
+
+            original_name="$(basename "${SRC%%\?*}")"
+            if [ -z "$original_name" ] || [ "$original_name" = "/" ] || [ "$original_name" = "." ]; then
+              original_name="downloaded-archive"
+            fi
           else
             echo "Source is repo file: $SRC"
             if [ ! -f "$SRC" ]; then
               echo "File not found in repository: $SRC"
               exit 1
             fi
+
             cp --preserve=mode,timestamps "$SRC" "$DEST"
+            original_name="$(basename "$SRC")"
           fi
 
           if [ ! -s "$DEST" ]; then
@@ -89,6 +127,50 @@ jobs:
           echo "Saved input:"
           ls -lh "$DEST"
           file "$DEST" || true
+
+          echo "original_name=$original_name" >> "$GITHUB_OUTPUT"
+
+      - name: Derive archive base name
+        id: naming
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          original_name='${{ steps.fetch.outputs.original_name }}'
+          requested_name='${{ inputs.output_name }}'
+
+          strip_archive_ext() {
+            local name="$1"
+            name="${name%.tar.gz}"
+            name="${name%.tar.xz}"
+            name="${name%.tar.zst}"
+            name="${name%.tar.bz2}"
+            name="${name%.tgz}"
+            name="${name%.tbz2}"
+            name="${name%.txz}"
+            name="${name%.tzst}"
+            name="${name%.zip}"
+            name="${name%.7z}"
+            name="${name%.tar}"
+            echo "$name"
+          }
+
+          sanitize() {
+            echo "$1" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+          }
+
+          if [ -n "$requested_name" ]; then
+            base="$requested_name"
+          else
+            base="$(strip_archive_ext "$original_name")"
+          fi
+
+          base="$(sanitize "$base")"
+          if [ -z "$base" ]; then
+            base="repacked"
+          fi
+
+          echo "base_name=$base" >> "$GITHUB_OUTPUT"
 
       - name: Detect archive type
         id: detect
@@ -147,12 +229,51 @@ jobs:
             esac
           fi
 
-          echo "archive_kind=$archive_kind" >> "$GITHUB_OUTPUT"
-
           if [ "$archive_kind" = "unknown" ]; then
             echo "Unsupported or unknown archive format"
             exit 1
           fi
+
+          echo "archive_kind=$archive_kind" >> "$GITHUB_OUTPUT"
+
+      - name: Classify payload for tag/release naming
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KIND='${{ steps.detect.outputs.archive_kind }}'
+          payload_type="archive"
+
+          case "$KIND" in
+            tar|tar_like)
+              payload_type="rootfs-safe"
+              ;;
+            zip)
+              payload_type="zip"
+              ;;
+            7z)
+              payload_type="7z"
+              ;;
+          esac
+
+          # Lightweight filename hints
+          base='${{ steps.naming.outputs.base_name }}'
+          lc_base="$(echo "$base" | tr '[:upper:]' '[:lower:]')"
+
+          case "$lc_base" in
+            *rootfs*|*debian*|*ubuntu*|*archlinux*|*fedora*|*alpine*|*void*)
+              payload_type="rootfs"
+              ;;
+            *llvm*|*clang*|*toolchain*|*ndk*)
+              payload_type="toolchain"
+              ;;
+            *src*|*source*)
+              payload_type="source"
+              ;;
+          esac
+
+          echo "payload_type=$payload_type" >> "$GITHUB_OUTPUT"
 
       - name: Extract source archive safely
         shell: bash
@@ -167,15 +288,13 @@ jobs:
 
           case "$KIND" in
             tar|tar_like)
-              # Best path for rootfs/toolchain archives: preserves symlinks, perms, mtimes, etc.
               bsdtar -xpf "$SRC" -C "$DEST"
               ;;
             zip)
-              # Handle zip normally. bsdtar works well for standard zip extraction too.
+              # Normal zip handling
               bsdtar -xpf "$SRC" -C "$DEST"
               ;;
             7z)
-              # 7z archives may contain links, but extraction semantics are format-dependent.
               7z x "$SRC" -o"$DEST"
               ;;
             *)
@@ -202,19 +321,17 @@ jobs:
           find work/extracted -mindepth 1 -maxdepth 2 | head -100 || true
 
       - name: Create metadata-safe 7z archive
+        id: build
         shell: bash
         run: |
           set -euo pipefail
 
-          OUT="$GITHUB_WORKSPACE/work/output/${{ inputs.output_name }}.7z"
+          OUT_NAME='${{ steps.naming.outputs.base_name }}.7z'
+          OUT_PATH="$GITHUB_WORKSPACE/work/output/$OUT_NAME"
 
           cd work/extracted
 
-          # Archive "." from inside extracted tree so:
-          # - dotfiles are included
-          # - original directory layout is preserved
-          # - no shell glob surprises
-          7z a "$OUT" . \
+          7z a "$OUT_PATH" . \
             -t7z \
             -snl \
             -snh \
@@ -226,17 +343,18 @@ jobs:
             -mmt=2
 
           echo "Created archive:"
-          ls -lh "$OUT"
+          ls -lh "$OUT_PATH"
+          7z l "$OUT_PATH"
 
-          echo "Archive listing:"
-          7z l "$OUT"
+          echo "output_name=$OUT_NAME" >> "$GITHUB_OUTPUT"
+          echo "output_path=$OUT_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Round-trip verify archive
         shell: bash
         run: |
           set -euo pipefail
 
-          OUT="$(find work/output -maxdepth 1 -type f -name '*.7z' | head -n1)"
+          OUT='${{ steps.build.outputs.output_path }}'
           TESTDIR="work/verify/roundtrip"
 
           mkdir -p "$TESTDIR"
@@ -251,8 +369,89 @@ jobs:
           echo "Round-trip executable sample:"
           find "$TESTDIR" -type f -perm /111 | head -50 || true
 
+      - name: Compute tag and release names
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sanitize() {
+            echo "$1" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+          }
+
+          base='${{ steps.naming.outputs.base_name }}'
+          payload='${{ steps.classify.outputs.payload_type }}'
+          ts="$(date -u +%Y%m%d-%H%M%S)"
+
+          requested_tag='${{ inputs.tag_name }}'
+          requested_release='${{ inputs.release_name }}'
+
+          auto_tag="$(sanitize "repack-${payload}-${base}-${ts}")"
+          auto_release="Repacked ${base} (${payload})"
+
+          if [ -n "$requested_tag" ]; then
+            final_tag="$(sanitize "$requested_tag")"
+          else
+            final_tag="$auto_tag"
+          fi
+
+          if [ -n "$requested_release" ]; then
+            final_release="$requested_release"
+          else
+            final_release="$auto_release"
+          fi
+
+          echo "final_tag=$final_tag" >> "$GITHUB_OUTPUT"
+          echo "final_release=$final_release" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push git tag
+        if: ${{ inputs.create_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG='${{ steps.meta.outputs.final_tag }}'
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists locally: $TAG"
+            exit 1
+          fi
+
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "Tag already exists on remote: $TAG"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag "$TAG"
+          git push origin "refs/tags/$TAG"
+
+      - name: Create GitHub Release
+        if: ${{ inputs.create_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.final_tag }}
+          name: ${{ steps.meta.outputs.final_release }}
+          generate_release_notes: false
+          files: |
+            ${{ steps.build.outputs.output_path }}
+          body: |
+            Repacked archive details:
+
+            - Source: `${{ inputs.source }}`
+            - Output: `${{ steps.build.outputs.output_name }}`
+            - Archive kind: `${{ steps.detect.outputs.archive_kind }}`
+            - Payload type: `${{ steps.classify.outputs.payload_type }}`
+
+            Notes:
+            - tar-family archives were extracted with bsdtar for better Unix metadata handling
+            - symlinks and hardlinks were preserved when creating the 7z output
+            - zip inputs were handled normally
+
       - name: Upload repacked archive
         uses: actions/upload-artifact@v4
         with:
           name: repacked-7z
-          path: work/output/*.7z
+          path: ${{ steps.build.outputs.output_path }}
