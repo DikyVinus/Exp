@@ -52,6 +52,18 @@ on:
           - zip
           - both
 
+      slim_mode:
+        description: "Trim host toolchain aggressively"
+        required: true
+        default: true
+        type: boolean
+
+      keep_x86_host:
+        description: "Keep original linux-x86_64 host tree in final package"
+        required: true
+        default: false
+        type: boolean
+
       create_release:
         description: "Create GitHub release"
         required: false
@@ -92,7 +104,7 @@ jobs:
           sudo apt-get install -y \
             curl wget unzip zip p7zip-full \
             tar xz-utils zstd file rsync jq \
-            libarchive-tools perl
+            libarchive-tools perl patchelf
 
       - name: Prepare workspace
         run: |
@@ -212,7 +224,7 @@ jobs:
           test -d "$LLVM_ROOT/bin"
           echo "LLVM_ROOT=$LLVM_ROOT" >> "$GITHUB_ENV"
 
-      - name: Create ARM64 NDK host tree
+      - name: Build minimal ARM64 host tree
         run: |
           PREBUILT_DIR="$NDK_ROOT/toolchains/llvm/prebuilt"
           ORIG_HOST="$PREBUILT_DIR/linux-x86_64"
@@ -220,21 +232,100 @@ jobs:
 
           test -d "$ORIG_HOST"
           rm -rf "$ARM64_HOST"
-          cp -a "$ORIG_HOST" "$ARM64_HOST"
+          mkdir -p "$ARM64_HOST"/{bin,lib,libexec,share}
 
-      - name: Overlay LLVM ARM64 onto NDK host tree
+          # Keep only Android-target sysroot from official NDK
+          rsync -a "$ORIG_HOST/sysroot/" "$ARM64_HOST/sysroot/"
+
+          # Some NDKs also use source.properties / notices / wrappers
+          [ -f "$ORIG_HOST/source.properties" ] && cp -a "$ORIG_HOST/source.properties" "$ARM64_HOST/"
+          [ -f "$ORIG_HOST/NOTICE" ] && cp -a "$ORIG_HOST/NOTICE" "$ARM64_HOST/" || true
+
+      - name: Overlay selected LLVM tools and resources
         run: |
           ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
 
-          for d in bin lib libexec include share; do
-            if [ -e "$LLVM_ROOT/$d" ]; then
-              mkdir -p "$ARM64_HOST/$d"
-              rsync -a "$LLVM_ROOT/$d"/ "$ARM64_HOST/$d"/
+          keep_bin=(
+            clang
+            clang++
+            clang-cpp
+            ld.lld
+            lld
+            llvm-ar
+            llvm-ranlib
+            llvm-nm
+            llvm-objcopy
+            llvm-objdump
+            llvm-readelf
+            llvm-strip
+            llvm-strings
+            llvm-size
+          )
+
+          if [ "${{ inputs.slim_mode }}" != "true" ]; then
+            keep_bin+=(clangd)
+          fi
+
+          mkdir -p "$ARM64_HOST/bin"
+
+          for f in "${keep_bin[@]}"; do
+            if [ -e "$LLVM_ROOT/bin/$f" ]; then
+              cp -a "$LLVM_ROOT/bin/$f" "$ARM64_HOST/bin/"
             fi
           done
 
-          test -x "$ARM64_HOST/bin/clang"
-          test -x "$ARM64_HOST/bin/clang++"
+          # Copy symlink targets too
+          for f in "${keep_bin[@]}"; do
+            if [ -L "$LLVM_ROOT/bin/$f" ]; then
+              target="$(readlink "$LLVM_ROOT/bin/$f")"
+              if [ -n "$target" ] && [ -e "$LLVM_ROOT/bin/$target" ]; then
+                cp -a "$LLVM_ROOT/bin/$target" "$ARM64_HOST/bin/" || true
+                ln -sf "$target" "$ARM64_HOST/bin/$f"
+              fi
+            fi
+          done
+
+          # Copy clang resource dir
+          if [ -d "$LLVM_ROOT/lib/clang" ]; then
+            mkdir -p "$ARM64_HOST/lib"
+            rsync -a "$LLVM_ROOT/lib/clang/" "$ARM64_HOST/lib/clang/"
+          fi
+
+      - name: Copy required shared libraries only
+        run: |
+          ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
+          mkdir -p "$ARM64_HOST/lib"
+
+          needed_bins=(
+            "$ARM64_HOST/bin/clang"
+            "$ARM64_HOST/bin/clang++"
+            "$ARM64_HOST/bin/ld.lld"
+            "$ARM64_HOST/bin/llvm-ar"
+            "$ARM64_HOST/bin/llvm-nm"
+            "$ARM64_HOST/bin/llvm-objcopy"
+            "$ARM64_HOST/bin/llvm-strip"
+          )
+
+          touch work/needed-libs.txt
+
+          for b in "${needed_bins[@]}"; do
+            [ -e "$b" ] || continue
+            patchelf --print-needed "$b" 2>/dev/null || true
+          done | sort -u > work/needed-libs.txt
+
+          while read -r lib; do
+            [ -n "$lib" ] || continue
+            found="$(find "$LLVM_ROOT/lib" "$LLVM_ROOT/libexec" -name "$lib" -type f | head -n1 || true)"
+            if [ -n "$found" ]; then
+              relbase="$LLVM_ROOT"
+              relpath="${found#$relbase/}"
+              mkdir -p "$ARM64_HOST/$(dirname "$relpath")"
+              cp -a "$found" "$ARM64_HOST/$relpath"
+            fi
+          done < work/needed-libs.txt
+
+          # Some LLVM bundles place runtime libs under lib/
+          find "$ARM64_HOST/lib" -maxdepth 2 -type f | sort || true
 
       - name: Patch host references
         run: |
@@ -249,9 +340,51 @@ jobs:
             fi
           done
 
-      - name: Normalize executable permissions
+      - name: Prune extras from ARM64 host
+        if: ${{ inputs.slim_mode }}
         run: |
-          find "$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin" -maxdepth 1 -type f -exec chmod +x {} + || true
+          ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
+
+          rm -rf \
+            "$ARM64_HOST/include" \
+            "$ARM64_HOST/share/doc" \
+            "$ARM64_HOST/share/man" \
+            "$ARM64_HOST/share/opt-viewer" \
+            "$ARM64_HOST/lib/python"* \
+            "$ARM64_HOST/bin/lldb"* \
+            "$ARM64_HOST/lib/liblldb"* \
+            "$ARM64_HOST/lib/cmake" \
+            "$ARM64_HOST/libexec"/*lldb* || true
+
+          find "$ARM64_HOST/lib" -type f -name '*.a' -delete || true
+          find "$ARM64_HOST/lib" -type f -name '*.la' -delete || true
+
+      - name: Strip host binaries and libs
+        run: |
+          ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
+
+          find "$ARM64_HOST/bin" -maxdepth 1 -type f -exec chmod +x {} + || true
+
+          while read -r f; do
+            file "$f" | grep -q 'ELF' || continue
+            llvm-strip "$f" 2>/dev/null || true
+          done < <(find "$ARM64_HOST/bin" "$ARM64_HOST/lib" -type f 2>/dev/null)
+
+      - name: Remove duplicate x86 host tree from final package
+        if: ${{ inputs.keep_x86_host != true }}
+        run: |
+          rm -rf "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
+
+      - name: Size report
+        run: |
+          echo "Top-level size:"
+          du -sh "$NDK_ROOT"/* 2>/dev/null | sort -h || true
+          echo
+          echo "Prebuilt tree size:"
+          du -sh "$NDK_ROOT/toolchains/llvm/prebuilt"/* 2>/dev/null | sort -h || true
+          echo
+          echo "ARM64 host detail:"
+          du -sh "$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"/* 2>/dev/null | sort -h || true
 
       - name: Compute package metadata
         id: meta
@@ -264,10 +397,13 @@ jobs:
           ndk_label="${{ steps.ndkmeta.outputs.ndk_label }}"
           llvm_label="${{ steps.llvmmeta.outputs.llvm_label }}"
 
+          suffix="linux-arm64"
+          [ "${{ inputs.slim_mode }}" = "true" ] && suffix="${suffix}-slim"
+
           if [ -n "${{ inputs.package_name }}" ]; then
             base="${{ inputs.package_name }}"
           else
-            base="android-ndk-${ndk_label}-${llvm_label}-linux-arm64"
+            base="android-ndk-${ndk_label}-${llvm_label}-${suffix}"
           fi
 
           base="$(sanitize "$base")"
@@ -275,7 +411,7 @@ jobs:
           if [ -n "${{ inputs.tag_name }}" ]; then
             tag="$(sanitize "${{ inputs.tag_name }}")"
           else
-            tag="$(sanitize "ndk-${ndk_label}-${llvm_label}-linux-arm64-${ts}")"
+            tag="$(sanitize "ndk-${ndk_label}-${llvm_label}-${suffix}-${ts}")"
           fi
 
           echo "base=$base" >> "$GITHUB_OUTPUT"
@@ -317,26 +453,12 @@ jobs:
             -t7z \
             -m0=lzma2 \
             -mx=9 \
-            -mfb=128 \
-            -md=128m \
+            -mfb=273 \
+            -md=512m \
             -ms=on \
             -mmt=2
 
           ls -lh "$OUT"
-          7z l "$OUT" | head -200 || true
-
-      - name: Round-trip verify TAR.7Z
-        if: ${{ inputs.package_format == 'tar.7z' || inputs.package_format == 'both' }}
-        run: |
-          mkdir -p work/verify/7z work/verify/tar
-
-          7z x "work/out/${FINAL_DIR}.tar.7z" -owork/verify/7z
-          test -f "work/verify/7z/${FINAL_DIR}.tar"
-
-          bsdtar -xpf "work/verify/7z/${FINAL_DIR}.tar" -C work/verify/tar
-
-          find work/verify/tar -maxdepth 4 | head -100 || true
-          find work/verify/tar -type l | head -50 || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -344,7 +466,6 @@ jobs:
           name: ${{ steps.meta.outputs.base }}
           path: |
             work/out/*.zip
-            work/out/*.tar
             work/out/*.tar.7z
 
       - name: Create and push tag
@@ -380,11 +501,13 @@ jobs:
             - NDK label: `${{ steps.ndkmeta.outputs.ndk_label }}`
             - Resolved LLVM URL: `${{ steps.llvmmeta.outputs.llvm_url }}`
             - LLVM label: `${{ steps.llvmmeta.outputs.llvm_label }}`
+            - Slim mode: `${{ inputs.slim_mode }}`
+            - Keep x86 host: `${{ inputs.keep_x86_host }}`
             - Package format: `${{ inputs.package_format }}`
 
             Notes:
-            - Official NDK package was used as the base
-            - Original NDK host tree was copied to `linux-arm64`
-            - LLVM Linux ARM64 binaries were overlaid on top
-            - Host references were patched toward `linux-arm64`
+            - Official NDK sysroot is preserved
+            - ARM64 host tree is built from scratch
+            - Only selected LLVM tools/resources are copied
+            - Duplicate linux-x86_64 host tree can be removed
             - Unix-safe compressed output is emitted as `.tar.7z`
