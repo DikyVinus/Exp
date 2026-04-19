@@ -45,10 +45,10 @@ on:
       package_format:
         description: "Artifact format"
         required: true
-        default: 7z
+        default: tar.7z
         type: choice
         options:
-          - 7z
+          - tar.7z
           - zip
           - both
 
@@ -300,32 +300,43 @@ jobs:
           zip -r9 "$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.zip" "$FINAL_DIR"
           ls -lh "$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.zip"
 
-      - name: Pack 7Z
-        if: ${{ inputs.package_format == '7z' || inputs.package_format == 'both' }}
+      - name: Pack TAR
+        if: ${{ inputs.package_format == 'tar.7z' || inputs.package_format == 'both' }}
         run: |
-          OUT="$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.7z"
           cd work/src
+          bsdtar -cpf "$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.tar" "$FINAL_DIR"
+          ls -lh "$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.tar"
 
-          7z a "$OUT" "$FINAL_DIR" \
+      - name: Pack TAR.7Z
+        if: ${{ inputs.package_format == 'tar.7z' || inputs.package_format == 'both' }}
+        run: |
+          TAR_PATH="$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.tar"
+          OUT="$GITHUB_WORKSPACE/work/out/${FINAL_DIR}.tar.7z"
+
+          7z a "$OUT" "$TAR_PATH" \
             -t7z \
-            -snl \
-            -snh \
             -m0=lzma2 \
-            -mx=9 \
-            -mfb=273 \
-            -md=256m \
+            -mx=7 \
+            -mfb=128 \
+            -md=128m \
             -ms=on \
             -mmt=2
 
           ls -lh "$OUT"
           7z l "$OUT" | head -200 || true
 
-      - name: Round-trip verify 7Z
-        if: ${{ inputs.package_format == '7z' || inputs.package_format == 'both' }}
+      - name: Round-trip verify TAR.7Z
+        if: ${{ inputs.package_format == 'tar.7z' || inputs.package_format == 'both' }}
         run: |
-          mkdir -p work/verify/7z
-          7z x "work/out/${FINAL_DIR}.7z" -owork/verify/7z
-          find work/verify/7z -maxdepth 3 | head -100 || true
+          mkdir -p work/verify/7z work/verify/tar
+
+          7z x "work/out/${FINAL_DIR}.tar.7z" -owork/verify/7z
+          test -f "work/verify/7z/${FINAL_DIR}.tar"
+
+          bsdtar -xpf "work/verify/7z/${FINAL_DIR}.tar" -C work/verify/tar
+
+          find work/verify/tar -maxdepth 4 | head -100 || true
+          find work/verify/tar -type l | head -50 || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -333,7 +344,8 @@ jobs:
           name: ${{ steps.meta.outputs.base }}
           path: |
             work/out/*.zip
-            work/out/*.7z
+            work/out/*.tar
+            work/out/*.tar.7z
 
       - name: Create and push tag
         if: ${{ inputs.create_tag }}
@@ -359,7 +371,7 @@ jobs:
           name: ${{ steps.meta.outputs.base }}
           files: |
             work/out/*.zip
-            work/out/*.7z
+            work/out/*.tar.7z
           body: |
             ARM64-hosted Android NDK package
 
@@ -375,3 +387,4 @@ jobs:
             - Original NDK host tree was copied to `linux-arm64`
             - LLVM Linux ARM64 binaries were overlaid on top
             - Host references were patched toward `linux-arm64`
+            - Unix-safe compressed output is emitted as `.tar.7z`
