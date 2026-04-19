@@ -79,7 +79,7 @@ jobs:
       - name: Setup host
         run: |
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
-          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 || true
 
           git config --global protocol.version 2
           git config --global core.compression 0
@@ -90,7 +90,7 @@ jobs:
             git zip unzip curl wget ccache rsync ca-certificates \
             bc bison flex libssl-dev libelf-dev python3 dwarves \
             pahole file xz-utils zstd jq \
-            libarchive-tools patch
+            libarchive-tools patch make
 
           mkdir -p ~/bin
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
@@ -242,10 +242,9 @@ jobs:
         run: |
           REPO_SYNC_FORCE_IPV4=1 repo sync -c -j"$((JOBS * 2))" \
             --optimized-fetch --prune --fail-fast \
-            --no-tags --current-branch || :
+            --no-tags --current-branch
 
           test -d common
-          test -f build/build.sh
           ls -la
           git -C common log --oneline -1 || true
 
@@ -257,7 +256,6 @@ jobs:
 
           test -d kernel/common/arch
           test -f kernel/common/Makefile
-          test -f kernel/build/build.sh
 
       - name: Override kernel commit
         if: ${{ inputs.kernel_commit != '' }}
@@ -381,7 +379,82 @@ jobs:
           ccache -M 5G
           ccache -s
 
-      - name: Build kernel with repo build.sh and downloaded LLVM
+      - name: Create local build.sh
+        run: |
+          mkdir -p kernel/build
+          cat > kernel/build/build.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+          cd "$ROOT_DIR"
+
+          : "${BUILD_CONFIG:=common/build.config.gki.aarch64}"
+          : "${OUT_DIR:=$ROOT_DIR/out}"
+          : "${DIST_DIR:=$OUT_DIR/dist}"
+          : "${JOBS:=$(nproc)}"
+
+          if [ ! -f "$BUILD_CONFIG" ]; then
+            echo "Missing BUILD_CONFIG: $BUILD_CONFIG"
+            exit 1
+          fi
+
+          export ROOT_DIR OUT_DIR DIST_DIR
+          export ARCH="${ARCH:-arm64}"
+          export SUBARCH="${SUBARCH:-arm64}"
+
+          export LLVM="${LLVM:-1}"
+          export LLVM_IAS="${LLVM_IAS:-1}"
+
+          export CC="${CC:-clang}"
+          export HOSTCC="${HOSTCC:-clang}"
+          export HOSTCXX="${HOSTCXX:-clang++}"
+          export LD="${LD:-ld.lld}"
+          export AR="${AR:-llvm-ar}"
+          export NM="${NM:-llvm-nm}"
+          export STRIP="${STRIP:-llvm-strip}"
+          export OBJCOPY="${OBJCOPY:-llvm-objcopy}"
+          export OBJDUMP="${OBJDUMP:-llvm-objdump}"
+          export READELF="${READELF:-llvm-readelf}"
+
+          # Source build config in a compatible way.
+          # Newer trees may keep this file mainly for external use.
+          set +u
+          . "$BUILD_CONFIG"
+          set -u
+
+          mkdir -p "$OUT_DIR" "$DIST_DIR"
+
+          if [ ! -f "$OUT_DIR/.config" ]; then
+            make -C common O="$OUT_DIR" ARCH="$ARCH" gki_defconfig
+          fi
+
+          make -C common \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            LLVM="$LLVM" \
+            LLVM_IAS="$LLVM_IAS" \
+            CC="$CC" \
+            HOSTCC="$HOSTCC" \
+            HOSTCXX="$HOSTCXX" \
+            LD="$LD" \
+            AR="$AR" \
+            NM="$NM" \
+            STRIP="$STRIP" \
+            OBJCOPY="$OBJCOPY" \
+            OBJDUMP="$OBJDUMP" \
+            READELF="$READELF" \
+            -j"${JOBS}" \
+            ${MAKE_GOALS:-Image Image.gz modules}
+
+          find "$OUT_DIR" -type f \( -name 'Image' -o -name 'Image.gz' -o -name '*.ko' \) -exec cp -f {} "$DIST_DIR"/ \; || true
+
+          echo "Dist contents:"
+          find "$DIST_DIR" -maxdepth 2 -type f | sort || true
+          EOF
+          chmod +x kernel/build/build.sh
+
+      - name: Build kernel with local build.sh and downloaded LLVM
         working-directory: kernel
         run: |
           export PATH="$LLVM_ROOT/bin:$PATH"
@@ -395,14 +468,14 @@ jobs:
           export OBJCOPY="llvm-objcopy"
           export OBJDUMP="llvm-objdump"
           export STRIP="llvm-strip"
+          export READELF="llvm-readelf"
           export LLVM=1
           export LLVM_IAS=1
 
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR="$PWD/out"
           export DIST_DIR="$PWD/out/dist"
-          export MAKEFLAGS="-j$JOBS"
-          export NINJA_ARGS="-j$JOBS"
+          export JOBS="$JOBS"
 
           bash build/build.sh
 
