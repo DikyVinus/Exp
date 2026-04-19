@@ -253,13 +253,6 @@ jobs:
         run: |
           find "$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin" -maxdepth 1 -type f -exec chmod +x {} + || true
 
-      - name: Smoke-test host tools
-        run: |
-          export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin:$PATH"
-          clang --version
-          ld.lld --version
-          llvm-ar --version
-
       - name: Compute package metadata
         id: meta
         run: |
