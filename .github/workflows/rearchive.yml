@@ -22,17 +22,36 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install tools
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y p7zip-full curl wget file
+          sudo apt-get install -y \
+            p7zip-full \
+            curl \
+            wget \
+            file \
+            tar \
+            libarchive-tools \
+            xz-utils \
+            zstd \
+            gzip \
+            bzip2
+
+      - name: Prepare workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf work
+          mkdir -p work/input work/extracted work/output work/verify
 
       - name: Fetch source archive
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p work/input work/extracted work/output
 
           SRC='${{ inputs.source }}'
+          DEST="work/input/source.archive"
 
           is_url() {
             [[ "$1" =~ ^https?:// ]]
@@ -41,17 +60,17 @@ jobs:
           if is_url "$SRC"; then
             echo "Source is URL: $SRC"
 
-            # First try wget because it handles redirects and Content-Disposition nicely.
-            # This supports both direct links and links that redirect to the actual file.
             if wget \
               --trust-server-names \
               --content-disposition \
-              -O work/input/download.tmp \
+              --tries=3 \
+              --waitretry=2 \
+              -O "$DEST" \
               "$SRC"; then
-              mv work/input/download.tmp work/input/source.archive
+              :
             else
               echo "wget failed, retrying with curl"
-              curl -fL --retry 3 --retry-delay 2 -o work/input/source.archive "$SRC"
+              curl -fL --retry 3 --retry-delay 2 -o "$DEST" "$SRC"
             fi
           else
             echo "Source is repo file: $SRC"
@@ -59,32 +78,146 @@ jobs:
               echo "File not found in repository: $SRC"
               exit 1
             fi
-            cp "$SRC" work/input/source.archive
+            cp --preserve=mode,timestamps "$SRC" "$DEST"
           fi
 
-          if [ ! -s work/input/source.archive ]; then
-            echo "Downloaded/copied archive is empty"
+          if [ ! -s "$DEST" ]; then
+            echo "Archive is empty"
             exit 1
           fi
 
-          echo "Saved input as:"
-          ls -lh work/input/source.archive
-          file work/input/source.archive || true
+          echo "Saved input:"
+          ls -lh "$DEST"
+          file "$DEST" || true
 
-      - name: Extract source archive
+      - name: Detect archive type
+        id: detect
         shell: bash
         run: |
           set -euo pipefail
-          7z x work/input/source.archive -owork/extracted
 
-      - name: Create high-compression 7z archive
+          SRC="work/input/source.archive"
+
+          mime="$(file -b --mime-type "$SRC" || true)"
+          desc="$(file -b "$SRC" || true)"
+
+          echo "MIME: $mime"
+          echo "DESC: $desc"
+
+          archive_kind="unknown"
+
+          case "$mime" in
+            application/zip)
+              archive_kind="zip"
+              ;;
+            application/x-7z-compressed)
+              archive_kind="7z"
+              ;;
+            application/x-tar)
+              archive_kind="tar"
+              ;;
+            application/gzip|application/x-gzip)
+              archive_kind="tar_like"
+              ;;
+            application/x-xz)
+              archive_kind="tar_like"
+              ;;
+            application/zstd)
+              archive_kind="tar_like"
+              ;;
+            application/x-bzip2)
+              archive_kind="tar_like"
+              ;;
+          esac
+
+          if [ "$archive_kind" = "unknown" ]; then
+            case "$desc" in
+              *"Zip archive data"*)
+                archive_kind="zip"
+                ;;
+              *"7-zip archive data"*)
+                archive_kind="7z"
+                ;;
+              *"POSIX tar archive"*|*"tar archive"*)
+                archive_kind="tar"
+                ;;
+              *"gzip compressed data"*|*"XZ compressed data"*|*"Zstandard compressed data"*|*"bzip2 compressed data"*)
+                archive_kind="tar_like"
+                ;;
+            esac
+          fi
+
+          echo "archive_kind=$archive_kind" >> "$GITHUB_OUTPUT"
+
+          if [ "$archive_kind" = "unknown" ]; then
+            echo "Unsupported or unknown archive format"
+            exit 1
+          fi
+
+      - name: Extract source archive safely
         shell: bash
         run: |
           set -euo pipefail
-          out="work/output/${{ inputs.output_name }}.7z"
 
-          7z a "$out" ./work/extracted/* \
+          SRC="work/input/source.archive"
+          KIND='${{ steps.detect.outputs.archive_kind }}'
+          DEST="work/extracted"
+
+          echo "Detected archive kind: $KIND"
+
+          case "$KIND" in
+            tar|tar_like)
+              # Best path for rootfs/toolchain archives: preserves symlinks, perms, mtimes, etc.
+              bsdtar -xpf "$SRC" -C "$DEST"
+              ;;
+            zip)
+              # Handle zip normally. bsdtar works well for standard zip extraction too.
+              bsdtar -xpf "$SRC" -C "$DEST"
+              ;;
+            7z)
+              # 7z archives may contain links, but extraction semantics are format-dependent.
+              7z x "$SRC" -o"$DEST"
+              ;;
+            *)
+              echo "Unsupported archive kind: $KIND"
+              exit 1
+              ;;
+          esac
+
+          echo "Top-level extracted entries:"
+          ls -la "$DEST"
+
+      - name: Inspect extracted content
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Symlink sample:"
+          find work/extracted -type l | head -50 || true
+
+          echo "Executable sample:"
+          find work/extracted -type f -perm /111 | head -50 || true
+
+          echo "Top-level structure:"
+          find work/extracted -mindepth 1 -maxdepth 2 | head -100 || true
+
+      - name: Create metadata-safe 7z archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/work/output/${{ inputs.output_name }}.7z"
+
+          cd work/extracted
+
+          # Archive "." from inside extracted tree so:
+          # - dotfiles are included
+          # - original directory layout is preserved
+          # - no shell glob surprises
+          7z a "$OUT" . \
             -t7z \
+            -snl \
+            -snh \
             -m0=lzma2 \
             -mx=9 \
             -mfb=273 \
@@ -92,8 +225,31 @@ jobs:
             -ms=on \
             -mmt=2
 
-          echo "Created: $out"
-          7z l "$out"
+          echo "Created archive:"
+          ls -lh "$OUT"
+
+          echo "Archive listing:"
+          7z l "$OUT"
+
+      - name: Round-trip verify archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$(find work/output -maxdepth 1 -type f -name '*.7z' | head -n1)"
+          TESTDIR="work/verify/roundtrip"
+
+          mkdir -p "$TESTDIR"
+          7z x "$OUT" -o"$TESTDIR"
+
+          echo "Round-trip top-level:"
+          ls -la "$TESTDIR"
+
+          echo "Round-trip symlink sample:"
+          find "$TESTDIR" -type l | head -50 || true
+
+          echo "Round-trip executable sample:"
+          find "$TESTDIR" -type f -perm /111 | head -50 || true
 
       - name: Upload repacked archive
         uses: actions/upload-artifact@v4
