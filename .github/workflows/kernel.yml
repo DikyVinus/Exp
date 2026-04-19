@@ -4,15 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       kernel_version:
+        description: "Android common kernel version"
         required: true
         type: choice
         options: ["5.10", "6.1", "6.6"]
 
       kernel_commit:
+        description: "Optional kernel/common commit override"
         required: false
         default: ""
+        type: string
 
       manager:
+        description: "Root manager"
         required: true
         type: choice
         default: Vanilla
@@ -26,22 +30,28 @@ on:
           - Wild_KSU
 
       manager_commit:
+        description: "Optional manager commit override"
         required: false
         default: ""
+        type: string
 
       lto_mode:
+        description: "LTO mode"
         required: true
         type: choice
         options: [thin, full, none]
 
       susfs:
+        description: "Apply SUSFS"
         required: true
         type: choice
         options: ["no", "yes"]
 
       susfs_commit:
+        description: "Optional SUSFS commit override"
         required: false
         default: ""
+        type: string
 
 env:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -54,196 +64,299 @@ jobs:
         shell: bash -euo pipefail {0}
 
     steps:
-      - name: Setup
+      - name: Setup host
         run: |
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
 
           git config --global protocol.version 2
           git config --global core.compression 0
-          git config --global fetch.parallel $(nproc)
+          git config --global fetch.parallel "$(nproc)"
 
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            git zip curl ccache rsync ca-certificates \
-            bc bison flex libssl-dev libelf-dev python3 dwarves
+            git zip unzip curl wget ccache rsync ca-certificates \
+            bc bison flex libssl-dev libelf-dev python3 dwarves \
+            pahole build-essential file xz-utils zstd
 
           mkdir -p ~/bin
-          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
           chmod +x ~/bin/repo
-          echo "$HOME/bin" >> $GITHUB_PATH
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
-          echo "JOBS=$(nproc)" >> $GITHUB_ENV
-          echo "USE_CCACHE=1" >> $GITHUB_ENV
+          echo "JOBS=$(nproc)" >> "$GITHUB_ENV"
+          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
+      - name: Check out workflow repo
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          submodules: false
 
-      - name: Submodules
+      - name: Init submodules
         run: |
-          git -c submodule.fetchJobs=$JOBS submodule update \
+          git -c submodule.fetchJobs="$JOBS" submodule update \
             --init --depth=1 --filter=blob:none \
-            src/${{ inputs.kernel_version }}
+            "src/${{ inputs.kernel_version }}"
 
           if [ "${{ inputs.manager }}" != "Vanilla" ]; then
-            git -c submodule.fetchJobs=$JOBS submodule update \
+            git -c submodule.fetchJobs="$JOBS" submodule update \
               --init --depth=1 --filter=blob:none \
-              manager/${{ inputs.manager }}
+              "manager/${{ inputs.manager }}"
           fi
 
-          [ -d src/${{ inputs.kernel_version }} ] || exit 1
+          test -d "src/${{ inputs.kernel_version }}"
           if [ "${{ inputs.manager }}" != "Vanilla" ]; then
-            [ -d manager/${{ inputs.manager }} ] || exit 1
+            test -d "manager/${{ inputs.manager }}"
           fi
 
-      - name: Override manager
+      - name: Override manager commit
         if: ${{ inputs.manager != 'Vanilla' && inputs.manager_commit != '' }}
         run: |
-          git -C manager/${{ inputs.manager }} fetch origin ${{ inputs.manager_commit }} --depth=1
-          git -C manager/${{ inputs.manager }} checkout --detach FETCH_HEAD
+          git -C "manager/${{ inputs.manager }}" fetch origin "${{ inputs.manager_commit }}" --depth=1
+          git -C "manager/${{ inputs.manager }}" checkout --detach FETCH_HEAD
+          git -C "manager/${{ inputs.manager }}" log --oneline -1
 
-      - name: Resolve branch
+      - name: Resolve Android branch metadata
         id: vars
         run: |
           case "${{ inputs.kernel_version }}" in
-            5.10) A=android12 B=common-android12-5.10 ;;
-            6.1)  A=android14 B=common-android14-6.1 ;;
-            6.6)  A=android15 B=common-android15-6.6 ;;
+            5.10)
+              echo "android=android12" >> "$GITHUB_OUTPUT"
+              echo "branch=common-android12-5.10" >> "$GITHUB_OUTPUT"
+              ;;
+            6.1)
+              echo "android=android14" >> "$GITHUB_OUTPUT"
+              echo "branch=common-android14-6.1" >> "$GITHUB_OUTPUT"
+              ;;
+            6.6)
+              echo "android=android15" >> "$GITHUB_OUTPUT"
+              echo "branch=common-android15-6.6" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported kernel version"
+              exit 1
+              ;;
           esac
-          echo "android=$A" >> $GITHUB_OUTPUT
-          echo "branch=$B" >> $GITHUB_OUTPUT
 
-      - name: Init repo
-        run: |
-          mkdir -p kernel
-          cd kernel
-
-          if [ ! -d .repo ]; then
-            repo init -u https://android.googlesource.com/kernel/manifest \
-              -b ${{ steps.vars.outputs.branch }}
-          fi
-
-          mkdir -p .repo/local_manifests
-          echo '<manifest><remove-project name="kernel/common"/></manifest>' \
-            > .repo/local_manifests/remove.xml
-
-      - uses: actions/cache@v4
+      - name: Restore repo cache
+        uses: actions/cache@v4
         with:
           path: kernel/.repo
           key: repo-${{ steps.vars.outputs.branch }}
           restore-keys: |
             repo-${{ steps.vars.outputs.branch }}
 
-      - name: Sync kernel
+      - name: Init Android kernel repo
+        run: |
+          mkdir -p kernel
+          cd kernel
+
+          if [ ! -d .repo ]; then
+            repo init -u https://android.googlesource.com/kernel/manifest \
+              -b "${{ steps.vars.outputs.branch }}"
+          fi
+
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/remove.xml <<'EOF'
+          <manifest>
+            <remove-project name="kernel/common"/>
+          </manifest>
+          EOF
+
+      - name: Sync kernel sources
         working-directory: kernel
         run: |
-          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j$(($JOBS * 2)) \
+          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j"$((JOBS * 2))" \
             --optimized-fetch --prune --fail-fast \
             --no-tags --current-branch
 
-      - name: Inject source
+          test -d common
+          ls -la
+          git -C common log --oneline -1 || true
+
+      - name: Inject custom source tree
         run: |
           rsync -a --delete --checksum \
-            src/${{ inputs.kernel_version }}/ kernel/common/
+            "src/${{ inputs.kernel_version }}/" \
+            "kernel/common/"
+
+          test -d kernel/common/arch
+          test -f kernel/common/Makefile
 
       - name: Override kernel commit
         if: ${{ inputs.kernel_commit != '' }}
         run: |
-          git -C kernel/common fetch origin ${{ inputs.kernel_commit }} --depth=1
+          git -C kernel/common fetch origin "${{ inputs.kernel_commit }}" --depth=1
           git -C kernel/common checkout --detach FETCH_HEAD
+          git -C kernel/common log --oneline -1
 
-      - name: Apply patches
+      - name: Apply manager patches
+        if: ${{ inputs.manager != 'Vanilla' }}
         run: |
-          if [ "${{ inputs.manager }}" != "Vanilla" ]; then
-            bash manager/${{ inputs.manager }}/kernel/setup.sh
+          test -f "manager/${{ inputs.manager }}/kernel/setup.sh"
+
+          pushd kernel/common
+          bash "${GITHUB_WORKSPACE}/manager/${{ inputs.manager }}/kernel/setup.sh"
+          popd
+
+      - name: Fetch and apply SUSFS
+        if: ${{ inputs.susfs == 'yes' }}
+        run: |
+          SUSFS_DIR="$GITHUB_WORKSPACE/susfs"
+          SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ inputs.kernel_version }}"
+
+          rm -rf "$SUSFS_DIR"
+
+          if [ -n "${{ inputs.susfs_commit }}" ]; then
+            git init "$SUSFS_DIR"
+            git -C "$SUSFS_DIR" remote add origin https://gitlab.com/simonpunk/susfs4ksu.git
+            git -C "$SUSFS_DIR" fetch --depth=1 origin "${{ inputs.susfs_commit }}"
+            git -C "$SUSFS_DIR" checkout --detach FETCH_HEAD
+          else
+            git clone --depth=1 --filter=blob:none -b "$SUSFS_BRANCH" \
+              https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_DIR"
           fi
 
-          if [ "${{ inputs.susfs }}" = yes ]; then
-            BR="gki-${{ steps.vars.outputs.android }}-${{ inputs.kernel_version }}"
+          echo "SUSFS commit:"
+          git -C "$SUSFS_DIR" log --oneline -1
 
-            if [ -n "${{ inputs.susfs_commit }}" ]; then
-              rm -rf susfs
-              git init susfs
-              git -C susfs remote add origin https://gitlab.com/simonpunk/susfs4ksu.git
-              git -C susfs fetch --depth=1 origin ${{ inputs.susfs_commit }}
-              git -C susfs checkout --detach FETCH_HEAD
-            else
-              if [ -d susfs/.git ]; then
-                git -C susfs fetch origin "$BR" --depth=1
-                git -C susfs checkout --detach FETCH_HEAD
-              else
-                git clone --depth=1 --filter=blob:none -b "$BR" \
-                  https://gitlab.com/simonpunk/susfs4ksu.git susfs
-              fi
-            fi
+          test -d "$SUSFS_DIR/kernel_patches"
+          find "$SUSFS_DIR/kernel_patches" -maxdepth 3 -type f | sort
 
-            rsync -a susfs/kernel_patches/fs/ kernel/common/fs/
-            rsync -a susfs/kernel_patches/include/linux/ kernel/common/include/linux/
+          test -d "$SUSFS_DIR/kernel_patches/fs"
+          test -d "$SUSFS_DIR/kernel_patches/include/linux"
 
-            PATCH=$(find susfs/kernel_patches -name "50_add_susfs_in_*.patch" -print -quit)
-            cd kernel/common
-            patch -p1 --forward < "$PATCH" || exit 1
+          rsync -a "$SUSFS_DIR/kernel_patches/fs/" "kernel/common/fs/"
+          rsync -a "$SUSFS_DIR/kernel_patches/include/linux/" "kernel/common/include/linux/"
+
+          PATCH_FILE="$(find "$SUSFS_DIR/kernel_patches" -type f -name '50_add_susfs_in_*.patch' | sort | head -n1)"
+          if [ -z "$PATCH_FILE" ]; then
+            echo "Could not find SUSFS integration patch"
+            exit 1
           fi
 
-      - name: Configure
-        run: |
-          DEF=kernel/common/arch/arm64/configs/gki_defconfig
-          [ -f "$DEF" ] || exit 1
+          echo "Using SUSFS patch: $PATCH_FILE"
 
-          cfg() {
-            sed -i "/^$1=/d;/^# $1 is not set/d" "$DEF"
-            [ "$2" = y ] && echo "$1=y" >> "$DEF" || echo "# $1 is not set" >> "$DEF"
+          pushd kernel/common
+          patch -p1 --forward --reject-file=- < "$PATCH_FILE"
+          popd
+
+          echo "Verifying SUSFS files landed..."
+          test -f kernel/common/fs/susfs.c || true
+          grep -R "susfs" -n kernel/common/fs kernel/common/include/linux kernel/common/Documentation 2>/dev/null | head -100 || true
+
+      - name: Configure kernel
+        run: |
+          DEFCONFIG="kernel/common/arch/arm64/configs/gki_defconfig"
+          OUT_DIR="$GITHUB_WORKSPACE/kernel/out"
+
+          test -f "$DEFCONFIG"
+
+          make -C kernel/common O="$OUT_DIR" ARCH=arm64 gki_defconfig
+
+          test -x kernel/common/scripts/config || chmod +x kernel/common/scripts/config
+
+          cfg_enable() {
+            kernel/common/scripts/config --file "$OUT_DIR/.config" -e "$1"
           }
 
-          if [ "${{ inputs.susfs }}" = yes ]; then
-            for c in CONFIG_KSU_SUSFS{,_SUS_PATH,_SUS_MOUNT,_SUS_KSTAT,_SPOOF_UNAME,_OPEN_REDIRECT,_SUS_MAP,_ENABLE_LOG,_HIDE_KSU_SUSFS_SYMBOLS,_SPOOF_CMDLINE_OR_BOOTCONFIG}; do
-              cfg $c y
+          cfg_disable() {
+            kernel/common/scripts/config --file "$OUT_DIR/.config" -d "$1"
+          }
+
+          if [ "${{ inputs.susfs }}" = "yes" ]; then
+            for sym in \
+              KSU_SUSFS \
+              KSU_SUS_PATH \
+              KSU_SUS_MOUNT \
+              KSU_SUS_KSTAT \
+              KSU_SPOOF_UNAME \
+              KSU_OPEN_REDIRECT \
+              KSU_SUS_MAP \
+              KSU_ENABLE_LOG \
+              KSU_HIDE_KSU_SUSFS_SYMBOLS \
+              KSU_SPOOF_CMDLINE_OR_BOOTCONFIG
+            do
+              cfg_enable "$sym" || true
             done
           fi
 
           case "${{ inputs.lto_mode }}" in
-            thin) cfg CONFIG_LTO_CLANG y; cfg CONFIG_LTO_CLANG_THIN y; cfg CONFIG_LTO_CLANG_FULL n ;;
-            full) cfg CONFIG_LTO_CLANG y; cfg CONFIG_LTO_CLANG_FULL y; cfg CONFIG_LTO_CLANG_THIN n ;;
-            none) cfg CONFIG_LTO_CLANG n; cfg CONFIG_LTO_CLANG_THIN n; cfg CONFIG_LTO_CLANG_FULL n ;;
+            thin)
+              cfg_enable LTO_CLANG || true
+              cfg_enable LTO_CLANG_THIN || true
+              cfg_disable LTO_CLANG_FULL || true
+              ;;
+            full)
+              cfg_enable LTO_CLANG || true
+              cfg_enable LTO_CLANG_FULL || true
+              cfg_disable LTO_CLANG_THIN || true
+              ;;
+            none)
+              cfg_disable LTO_CLANG || true
+              cfg_disable LTO_CLANG_THIN || true
+              cfg_disable LTO_CLANG_FULL || true
+              ;;
           esac
 
-          make -C kernel/common O=kernel/out ARCH=arm64 gki_defconfig
+          yes "" | make -C kernel/common O="$OUT_DIR" ARCH=arm64 olddefconfig
 
-          export CCACHE_COMPRESS=1
+          echo "Relevant final config:"
+          grep -E 'CONFIG_(KSU|SUSFS|LTO_CLANG)' "$OUT_DIR/.config" || true
+
+          if [ "${{ inputs.susfs }}" = "yes" ]; then
+            if ! grep -q '^CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config"; then
+              echo "CONFIG_KSU_SUSFS was not enabled in final .config"
+              echo "Most likely SUSFS Kconfig was not integrated by the selected manager/patch set"
+              exit 1
+            fi
+          fi
+
           ccache -M 5G
           ccache -s
 
-      - uses: actions/cache@v4
+      - name: Restore ccache
+        uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ inputs.kernel_version }}
+          key: ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ inputs.lto_mode }}
           restore-keys: |
-            ccache-${{ inputs.kernel_version }}
+            ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-
+            ccache-${{ inputs.kernel_version }}-
 
-      - name: Build
+      - name: Build kernel
         working-directory: kernel
         run: |
           export CC="ccache clang"
           export BUILD_CONFIG=common/build.config.gki.aarch64
-          export OUT_DIR=$(pwd)/out
+          export OUT_DIR="$PWD/out"
           export MAKEFLAGS="-j$JOBS"
           export NINJA_ARGS="-j$JOBS"
+
           bash build/build.sh
 
-      - name: Package
+          echo "Build outputs:"
+          find out -maxdepth 3 -type f | sort | tail -200
+
+      - name: Package with AnyKernel3
         run: |
           git clone --depth=1 --filter=blob:none \
             https://github.com/DikyVinus/AnyKernel3 ak3
 
-          IMG=$(find kernel/out -type f \( -name "Image" -o -name "Image.gz" \) | head -n1)
-          [ -n "$IMG" ] || exit 1
+          IMG="$(find kernel/out -type f \( -name 'Image' -o -name 'Image.gz' \) | head -n1)"
+          if [ -z "$IMG" ]; then
+            echo "Kernel image not found"
+            exit 1
+          fi
 
           install -m644 "$IMG" ak3/
           cd ak3
-          zip -r9 -q kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip .
+          zip -r9 -q "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip" .
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
         with:
           name: kernel
           path: ak3/*.zip
