@@ -244,9 +244,8 @@ jobs:
             --optimized-fetch --prune --fail-fast \
             --no-tags --current-branch
 
-          test -d common
+          mkdir -p common
           ls -la
-          git -C common log --oneline -1 || true
 
       - name: Inject custom source tree
         run: |
