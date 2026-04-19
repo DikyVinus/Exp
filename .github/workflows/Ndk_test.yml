@@ -1,0 +1,204 @@
+name: Validate latest ARM64-hosted NDK release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-latest-release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
+
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl jq p7zip-full tar file findutils coreutils grep sed libarchive-tools
+
+      - name: Resolve latest release asset
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          API="https://api.github.com/repos/DikyVinus/Exp/releases/latest"
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "$API" > latest.json
+
+          tag_name="$(jq -r '.tag_name' latest.json)"
+          release_name="$(jq -r '.name' latest.json)"
+
+          asset_url="$(jq -r '
+            .assets[]
+            | select(.name | endswith(".tar.7z"))
+            | .browser_download_url
+          ' latest.json | head -n1)"
+
+          asset_name="$(jq -r '
+            .assets[]
+            | select(.name | endswith(".tar.7z"))
+            | .name
+          ' latest.json | head -n1)"
+
+          if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
+            echo "No .tar.7z asset found in latest release"
+            jq -r '.assets[]?.name' latest.json || true
+            exit 1
+          fi
+
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+          echo "asset_url=$asset_url" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Latest release"
+            echo "- Tag: \`$tag_name\`"
+            echo "- Name: \`$release_name\`"
+            echo "- Asset: \`$asset_name\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download latest asset
+        run: |
+          mkdir -p work
+          wget -O "work/${{ steps.meta.outputs.asset_name }}" "${{ steps.meta.outputs.asset_url }}"
+          test -s "work/${{ steps.meta.outputs.asset_name }}"
+          ls -lh "work/${{ steps.meta.outputs.asset_name }}"
+
+      - name: Extract tar.7z
+        run: |
+          mkdir -p work/extract_outer work/extract_root
+
+          7z x "work/${{ steps.meta.outputs.asset_name }}" -owork/extract_outer
+
+          TAR_FILE="$(find work/extract_outer -maxdepth 1 -type f -name '*.tar' | head -n1)"
+          [ -n "$TAR_FILE" ] || { echo "Inner .tar not found"; exit 1; }
+
+          echo "TAR_FILE=$TAR_FILE" >> "$GITHUB_ENV"
+
+          tar -xpf "$TAR_FILE" -C work/extract_root
+
+          ROOT_DIR="$(find work/extract_root -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          [ -n "$ROOT_DIR" ] || { echo "Extracted root dir not found"; exit 1; }
+
+          echo "ROOT_DIR=$ROOT_DIR" >> "$GITHUB_ENV"
+
+          {
+            echo "## Extracted package"
+            echo "- Inner tar: \`$(basename "$TAR_FILE")\`"
+            echo "- Root dir: \`$(basename "$ROOT_DIR")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate NDK layout
+        run: |
+          NDK_ROOT="$ROOT_DIR"
+          PREBUILT="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
+          BIN="$PREBUILT/bin"
+          SYSROOT="$PREBUILT/sysroot"
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          check_path() {
+            [ -e "$1" ] || fail "Missing path: $1"
+          }
+
+          check_symlink_or_file() {
+            [ -e "$1" ] || [ -L "$1" ] || fail "Missing file/symlink: $1"
+          }
+
+          check_arm64_elf() {
+            local desc
+            desc="$(file -b "$1")"
+            echo "$desc" | grep -qi 'ELF' || fail "$1 is not ELF: $desc"
+            echo "$desc" | grep -qiE 'aarch64|arm64' || fail "$1 is not ARM64 ELF: $desc"
+          }
+
+          check_path "$NDK_ROOT/toolchains/llvm/prebuilt"
+          check_path "$PREBUILT"
+          check_path "$BIN"
+          check_path "$SYSROOT"
+          check_path "$SYSROOT/usr/include"
+          check_path "$SYSROOT/usr/lib"
+          check_path "$SYSROOT/usr/include/android/api-level.h"
+          check_path "$SYSROOT/usr/lib/aarch64-linux-android"
+          check_path "$SYSROOT/usr/lib/aarch64-linux-android/21"
+
+          for f in \
+            clang clang++ ld.lld lld llvm-ar llvm-ranlib llvm-nm \
+            llvm-objcopy llvm-objdump llvm-readelf llvm-strip
+          do
+            check_symlink_or_file "$BIN/$f"
+          done
+
+          for f in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-strip; do
+            target="$(readlink -f "$BIN/$f")"
+            [ -n "$target" ] || fail "Could not resolve $BIN/$f"
+            check_arm64_elf "$target"
+          done
+
+          find "$SYSROOT/usr/lib/aarch64-linux-android" -type f \( -name 'crtbegin*.o' -o -name 'crtend*.o' \) | grep -q . \
+            || fail "Missing crtbegin/crtend objects"
+
+          if find "$NDK_ROOT" -type l -print0 | while IFS= read -r -d '' link; do
+            target="$(readlink "$link")"
+            case "$target" in
+              /*)
+                echo "ABSOLUTE_SYMLINK $link -> $target"
+                exit 10
+                ;;
+            esac
+          done; then
+            :
+          else
+            fail "Found absolute symlink(s)"
+          fi
+
+          {
+            echo "## Layout validation"
+            echo "- linux-arm64 prebuilt tree: present"
+            echo "- ARM64 host binaries: present"
+            echo "- Android sysroot: present"
+            echo "- aarch64-linux-android API 21 dir: present"
+            echo "- crt objects: present"
+            echo "- No absolute symlink failures detected"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect key files
+        run: |
+          NDK_ROOT="$ROOT_DIR"
+          BIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin"
+
+          {
+            echo "## Key file inspection"
+            echo '```'
+            file "$BIN/clang"
+            file "$BIN/ld.lld"
+            file "$BIN/llvm-ar"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict
+        run: |
+          {
+            echo "## Verdict"
+            echo "This release is structurally correct for an ARM64-hosted NDK package."
+            echo
+            echo "It is **likely usable**, but this workflow does not execute ARM64 host binaries on x86."
+            echo
+            echo "To confirm full usability, run a second-stage ARM64 runtime test on-device or on an ARM64 runner:"
+            echo "- clang --version"
+            echo "- ld.lld --version"
+            echo "- compile hello.c with --target=aarch64-linux-android21"
+          } >> "$GITHUB_STEP_SUMMARY"
