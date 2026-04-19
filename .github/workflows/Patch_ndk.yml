@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_channel:
-        description: "Which official NDK line to auto-resolve when ndk_url is empty"
+        description: "Official NDK channel to auto-resolve when ndk_url is empty"
         required: true
         default: stable
         type: choice
@@ -25,14 +25,15 @@ on:
         type: string
 
       llvm_arm64_url:
-        description: "Linux ARM64 LLVM/Clang tarball URL"
-        required: true
+        description: "Optional override: direct LLVM Linux ARM64 tar.xz URL"
+        required: false
+        default: ""
         type: string
 
       llvm_label:
-        description: "LLVM label used in output filenames"
+        description: "Optional override label for LLVM in output/tag naming"
         required: false
-        default: "llvm-arm64"
+        default: ""
         type: string
 
       package_name:
@@ -81,7 +82,7 @@ jobs:
           sudo apt-get install -y \
             curl wget unzip zip p7zip-full \
             tar xz-utils zstd file rsync jq \
-            libarchive-tools patchelf perl
+            libarchive-tools perl
 
       - name: Prepare workspace
         run: |
@@ -94,6 +95,9 @@ jobs:
           PAGE="https://developer.android.com/ndk/downloads"
           HTML="work/downloads/ndk-downloads.html"
 
+          DEFAULT_STABLE="https://dl.google.com/android/repository/android-ndk-r29-linux.zip"
+          DEFAULT_PRERELEASE="https://dl.google.com/android/repository/android-ndk-r30-beta1-linux.zip"
+
           if [ -n "${{ inputs.ndk_url }}" ]; then
             ndk_url="${{ inputs.ndk_url }}"
           else
@@ -101,42 +105,27 @@ jobs:
 
             case "${{ inputs.release_channel }}" in
               stable)
-                section="$(awk '
-                  /Latest Stable Version/ {flag=1}
-                  /Latest Pre-Release Version/ {if (flag) exit}
-                  flag {print}
-                ' "$HTML")"
+                ndk_url="$(grep -oE 'https://dl\.google\.com/android/repository/android-ndk-r[0-9]+-linux\.zip' "$HTML" | head -n1 || true)"
+                [ -n "$ndk_url" ] || ndk_url="$DEFAULT_STABLE"
                 ;;
               prerelease)
-                section="$(awk '
-                  /Latest Pre-Release Version/ {flag=1}
-                  /Old Unsupported Versions/ {if (flag) exit}
-                  flag {print}
-                ' "$HTML")"
+                ndk_url="$(grep -oE 'https://dl\.google\.com/android/repository/android-ndk-r[0-9]+-beta[0-9]+-linux\.zip' "$HTML" | head -n1 || true)"
+                [ -n "$ndk_url" ] || ndk_url="$DEFAULT_PRERELEASE"
                 ;;
               *)
-                echo "Unknown release_channel"
+                echo "Unknown release_channel: ${{ inputs.release_channel }}"
                 exit 1
                 ;;
             esac
-
-            ndk_url="$(printf '%s\n' "$section" \
-              | grep -oE 'https://dl\.google\.com/android/repository/android-ndk-[^"]+-linux\.zip' \
-              | head -n1)"
-
-            if [ -z "$ndk_url" ]; then
-              echo "Failed to auto-resolve official NDK URL"
-              exit 1
-            fi
           fi
 
           filename="$(basename "${ndk_url%%\?*}")"
-          if [ -z "${{ inputs.ndk_version_label }}" ]; then
-            label="$filename"
-            label="${label%.zip}"
-            label="${label#android-ndk-}"
-          else
+
+          if [ -n "${{ inputs.ndk_version_label }}" ]; then
             label="${{ inputs.ndk_version_label }}"
+          else
+            label="${filename%.zip}"
+            label="${label#android-ndk-}"
           fi
 
           echo "ndk_url=$ndk_url" >> "$GITHUB_OUTPUT"
@@ -146,17 +135,60 @@ jobs:
           echo "Resolved NDK URL: $ndk_url"
           echo "Resolved NDK label: $label"
 
+      - name: Resolve latest LLVM Linux ARM64
+        id: llvmmeta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          API="https://api.github.com/repos/llvm/llvm-project/releases/latest"
+
+          if [ -n "${{ inputs.llvm_arm64_url }}" ]; then
+            llvm_url="${{ inputs.llvm_arm64_url }}"
+          else
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "$API" > work/downloads/llvm-latest.json
+
+            llvm_url="$(jq -r '
+              .assets[]
+              | select(.name | test("^LLVM-[0-9][^/]*-Linux-ARM64\\.tar\\.xz$"))
+              | .browser_download_url
+            ' work/downloads/llvm-latest.json | head -n1)"
+
+            if [ -z "$llvm_url" ] || [ "$llvm_url" = "null" ]; then
+              echo "Failed to resolve latest LLVM Linux ARM64 asset"
+              jq -r '.tag_name, (.assets[]?.name)' work/downloads/llvm-latest.json || true
+              exit 1
+            fi
+          fi
+
+          llvm_file="$(basename "${llvm_url%%\?*}")"
+
+          if [ -n "${{ inputs.llvm_label }}" ]; then
+            llvm_label="${{ inputs.llvm_label }}"
+          else
+            llvm_label="${llvm_file%.tar.xz}"
+          fi
+
+          echo "llvm_url=$llvm_url" >> "$GITHUB_OUTPUT"
+          echo "llvm_file=$llvm_file" >> "$GITHUB_OUTPUT"
+          echo "llvm_label=$llvm_label" >> "$GITHUB_OUTPUT"
+
+          echo "Resolved LLVM URL: $llvm_url"
+          echo "Resolved LLVM label: $llvm_label"
+
       - name: Download official NDK
         run: |
           wget -O work/downloads/ndk.zip "${{ steps.ndkmeta.outputs.ndk_url }}"
           test -s work/downloads/ndk.zip
           file work/downloads/ndk.zip
 
-      - name: Download ARM64 LLVM
+      - name: Download LLVM Linux ARM64
         run: |
-          wget -O work/downloads/llvm.tar "${{ inputs.llvm_arm64_url }}"
-          test -s work/downloads/llvm.tar
-          file work/downloads/llvm.tar
+          wget -O work/downloads/llvm.tar.xz "${{ steps.llvmmeta.outputs.llvm_url }}"
+          test -s work/downloads/llvm.tar.xz
+          file work/downloads/llvm.tar.xz
 
       - name: Extract official NDK
         run: |
@@ -166,41 +198,49 @@ jobs:
           echo "NDK_ROOT=$NDK_ROOT" >> "$GITHUB_ENV"
           echo "NDK extracted to: $NDK_ROOT"
 
-      - name: Extract ARM64 LLVM
+      - name: Extract LLVM Linux ARM64
         run: |
           mkdir -p work/src/llvm-arm64
-          bsdtar -xpf work/downloads/llvm.tar -C work/src/llvm-arm64
+          bsdtar -xpf work/downloads/llvm.tar.xz -C work/src/llvm-arm64
 
           LLVM_ROOT="$(find work/src/llvm-arm64 -mindepth 1 -maxdepth 1 -type d | head -n1 || true)"
           if [ -z "$LLVM_ROOT" ]; then
             LLVM_ROOT="work/src/llvm-arm64"
           fi
 
+          test -d "$LLVM_ROOT/bin"
           echo "LLVM_ROOT=$LLVM_ROOT" >> "$GITHUB_ENV"
           echo "LLVM extracted to: $LLVM_ROOT"
-          find "$LLVM_ROOT" -maxdepth 2 | head -100 || true
 
-      - name: Inspect original NDK layout
-        run: |
-          test -d "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
-          ls -la "$NDK_ROOT/toolchains/llvm/prebuilt"
-          find "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" -maxdepth 2 | head -100 || true
-
-      - name: Replace host LLVM with ARM64 build
+      - name: Create ARM64 NDK host tree
         run: |
           PREBUILT_DIR="$NDK_ROOT/toolchains/llvm/prebuilt"
-          SRC_LLVM="$LLVM_ROOT"
-          DST_LLVM="$PREBUILT_DIR/linux-arm64"
+          ORIG_HOST="$PREBUILT_DIR/linux-x86_64"
+          ARM64_HOST="$PREBUILT_DIR/linux-arm64"
 
-          rm -rf "$DST_LLVM"
-          mkdir -p "$DST_LLVM"
-          rsync -a "$SRC_LLVM"/ "$DST_LLVM"/
+          test -d "$ORIG_HOST"
 
-          test -d "$DST_LLVM/bin"
-          test -e "$DST_LLVM/bin/clang" || test -e "$DST_LLVM/bin/clang++"
+          rm -rf "$ARM64_HOST"
+          cp -a "$ORIG_HOST" "$ARM64_HOST"
 
-          echo "Installed ARM64 LLVM in $DST_LLVM"
-          find "$DST_LLVM" -maxdepth 2 | head -100 || true
+          echo "ARM64 host base copied from original NDK host tree"
+          ls -la "$PREBUILT_DIR"
+
+      - name: Overlay LLVM ARM64 onto NDK host tree
+        run: |
+          ARM64_HOST="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64"
+
+          for d in bin lib libexec include share; do
+            if [ -e "$LLVM_ROOT/$d" ]; then
+              mkdir -p "$ARM64_HOST/$d"
+              rsync -a "$LLVM_ROOT/$d"/ "$ARM64_HOST/$d"/
+            fi
+          done
+
+          find "$ARM64_HOST" -maxdepth 2 | head -150 || true
+
+          test -x "$ARM64_HOST/bin/clang"
+          test -x "$ARM64_HOST/bin/clang++"
 
       - name: Patch host references
         run: |
@@ -208,17 +248,17 @@ jobs:
           HOST_NEW="linux-arm64"
 
           mapfile -t files < <(grep -RIl --exclude-dir=.git "$HOST_OLD" "$NDK_ROOT" || true)
+
           for f in "${files[@]}"; do
             if file "$f" | grep -qiE 'text|script|json|xml'; then
               sed -i "s/${HOST_OLD}/${HOST_NEW}/g" "$f" || true
             fi
           done
 
+          # Keep compatibility for scripts that still probe linux-x86_64.
           if [ ! -e "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" ]; then
             ln -s linux-arm64 "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
           fi
-
-          grep -RIn "linux-arm64" "$NDK_ROOT" | head -100 || true
 
       - name: Normalize executable permissions
         run: |
@@ -229,9 +269,9 @@ jobs:
           export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-arm64/bin:$PATH"
 
           command -v clang
-          clang --version || true
-          ld.lld --version || true
-          llvm-ar --version || true
+          clang --version
+          ld.lld --version
+          llvm-ar --version
 
       - name: Smoke-test Android compile
         run: |
@@ -248,7 +288,7 @@ jobs:
             work/verify/hello.c \
             -o work/verify/hello-android
 
-          file work/verify/hello-android || true
+          file work/verify/hello-android
 
       - name: Compute package metadata
         id: meta
@@ -259,7 +299,7 @@ jobs:
 
           ts="$(date -u +%Y%m%d-%H%M%S)"
           ndk_label="${{ steps.ndkmeta.outputs.ndk_label }}"
-          llvm_label="${{ inputs.llvm_label }}"
+          llvm_label="${{ steps.llvmmeta.outputs.llvm_label }}"
 
           if [ -n "${{ inputs.package_name }}" ]; then
             base="${{ inputs.package_name }}"
@@ -358,13 +398,14 @@ jobs:
             ARM64-hosted Android NDK package
 
             - Auto channel: `${{ inputs.release_channel }}`
-            - Resolved official NDK URL: `${{ steps.ndkmeta.outputs.ndk_url }}`
+            - Resolved NDK URL: `${{ steps.ndkmeta.outputs.ndk_url }}`
             - NDK label: `${{ steps.ndkmeta.outputs.ndk_label }}`
-            - LLVM URL: `${{ inputs.llvm_arm64_url }}`
-            - LLVM label: `${{ inputs.llvm_label }}`
+            - Resolved LLVM URL: `${{ steps.llvmmeta.outputs.llvm_url }}`
+            - LLVM label: `${{ steps.llvmmeta.outputs.llvm_label }}`
 
             Notes:
             - Official NDK package was used as the base
-            - Host LLVM prebuilt was replaced with Linux ARM64 LLVM
+            - Original NDK host tree was copied to `linux-arm64`
+            - LLVM Linux ARM64 binaries were overlaid on top
             - Host references were patched toward `linux-arm64`
             - Both `.zip` and `.7z` outputs are attached
