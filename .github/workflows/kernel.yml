@@ -242,7 +242,7 @@ jobs:
         run: |
           REPO_SYNC_FORCE_IPV4=1 repo sync -c -j"$((JOBS * 2))" \
             --optimized-fetch --prune --fail-fast \
-            --no-tags --current-branch
+            --no-tags --current-branch || :
 
           test -d common
           test -f build/build.sh
