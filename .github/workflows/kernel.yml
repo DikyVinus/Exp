@@ -241,7 +241,7 @@ jobs:
 
       - name: Replace kernel/common with linked custom source
         run: |
-          KERNEL_LINK_TARGET="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
+          KERNEL_LINK_TARGET="../src/${{ inputs.kernel_version }}"
           test -d "$KERNEL_LINK_TARGET"
           test -f "$KERNEL_LINK_TARGET/Makefile"
           test -d "$KERNEL_LINK_TARGET/arch"
