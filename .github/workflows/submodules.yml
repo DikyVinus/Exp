@@ -27,7 +27,7 @@ on:
         default: ""
 
       group:
-        description: Folder group (src / kernel / manager / sources)
+        description: Folder group
         required: false
         default: ""
 
@@ -74,14 +74,19 @@ jobs:
           git config user.name github-actions
           git config user.email actions@github.com
 
-      - name: Sync
+      - name: Sync config
         run: |
           git submodule sync --recursive || true
+
+      - name: Init submodules for path actions
+        if: ${{ github.event.inputs.action == 'move' || github.event.inputs.action == 'move_group' || github.event.inputs.action == 'update_group' || github.event.inputs.action == 'replace_group' }}
+        run: |
+          git submodule update --init --recursive --depth=1 || true
 
       - name: Update all
         if: ${{ github.event.inputs.action == 'update' || github.event_name != 'workflow_dispatch' }}
         run: |
-          git config -f .gitmodules --get-regexp path | while read a b; do
+          git config -f .gitmodules --get-regexp path | while read -r a b; do
             git submodule update --init --remote --depth=1 "$b" || true
           done
 
@@ -97,22 +102,26 @@ jobs:
       - name: Replace
         if: ${{ github.event.inputs.action == 'replace' }}
         run: |
-          git submodule deinit -f "${{ github.event.inputs.path }}" || true
-          rm -rf ".git/modules/${{ github.event.inputs.path }}"
-          git rm -f "${{ github.event.inputs.path }}" || true
+          p="${{ github.event.inputs.path }}"
+
+          git submodule deinit -f "$p" || true
+          rm -rf ".git/modules/$p"
+          git rm -f "$p" || true
 
           if [ -n "${{ github.event.inputs.branch }}" ]; then
-            git submodule add -b "${{ github.event.inputs.branch }}" "${{ github.event.inputs.url }}" "${{ github.event.inputs.path }}"
+            git submodule add -b "${{ github.event.inputs.branch }}" "${{ github.event.inputs.url }}" "$p"
           else
-            git submodule add "${{ github.event.inputs.url }}" "${{ github.event.inputs.path }}"
+            git submodule add "${{ github.event.inputs.url }}" "$p"
           fi
 
       - name: Remove
         if: ${{ github.event.inputs.action == 'remove' }}
         run: |
-          git submodule deinit -f "${{ github.event.inputs.path }}" || true
-          rm -rf ".git/modules/${{ github.event.inputs.path }}"
-          git rm -f "${{ github.event.inputs.path }}" || true
+          p="${{ github.event.inputs.path }}"
+
+          git submodule deinit -f "$p" || true
+          rm -rf ".git/modules/$p"
+          git rm -f "$p" || true
 
       - name: Move single
         if: ${{ github.event.inputs.action == 'move' }}
@@ -120,21 +129,17 @@ jobs:
           old="${{ github.event.inputs.path }}"
           new="${{ github.event.inputs.new_path }}"
 
+          mkdir -p "$(dirname "$new")"
           git mv "$old" "$new"
 
-          url=$(git config -f .gitmodules --get submodule.$old.url || true)
-          branch=$(git config -f .gitmodules --get submodule.$old.branch || true)
+          url=$(git config -f .gitmodules --get submodule."$old".url || true)
+          branch=$(git config -f .gitmodules --get submodule."$old".branch || true)
 
-          git config -f .gitmodules --remove-section submodule.$old || true
-          git config -f .gitmodules submodule.$new.path "$new"
+          git config -f .gitmodules --remove-section submodule."$old" || true
+          git config -f .gitmodules submodule."$new".path "$new"
 
-          if [ -n "$url" ]; then
-            git config -f .gitmodules submodule.$new.url "$url"
-          fi
-
-          if [ -n "$branch" ]; then
-            git config -f .gitmodules submodule.$new.branch "$branch"
-          fi
+          [ -n "$url" ] && git config -f .gitmodules submodule."$new".url "$url"
+          [ -n "$branch" ] && git config -f .gitmodules submodule."$new".branch "$branch"
 
       - name: Move group
         if: ${{ github.event.inputs.action == 'move_group' }}
@@ -142,27 +147,23 @@ jobs:
           old="${{ github.event.inputs.group }}"
           new="${{ github.event.inputs.new_group }}"
 
-          git config -f .gitmodules --get-regexp path | while read a b; do
+          git config -f .gitmodules --get-regexp path | while read -r a b; do
             case "$b" in
-              $old/*)
+              "$old"/*)
                 name="${b#$old/}"
                 target="$new/$name"
 
+                mkdir -p "$(dirname "$target")"
                 git mv "$b" "$target"
 
-                url=$(git config -f .gitmodules --get submodule.$b.url || true)
-                branch=$(git config -f .gitmodules --get submodule.$b.branch || true)
+                url=$(git config -f .gitmodules --get submodule."$b".url || true)
+                branch=$(git config -f .gitmodules --get submodule."$b".branch || true)
 
-                git config -f .gitmodules --remove-section submodule.$b || true
-                git config -f .gitmodules submodule.$target.path "$target"
+                git config -f .gitmodules --remove-section submodule."$b" || true
+                git config -f .gitmodules submodule."$target".path "$target"
 
-                if [ -n "$url" ]; then
-                  git config -f .gitmodules submodule.$target.url "$url"
-                fi
-
-                if [ -n "$branch" ]; then
-                  git config -f .gitmodules submodule.$target.branch "$branch"
-                fi
+                [ -n "$url" ] && git config -f .gitmodules submodule."$target".url "$url"
+                [ -n "$branch" ] && git config -f .gitmodules submodule."$target".branch "$branch"
               ;;
             esac
           done
@@ -172,9 +173,9 @@ jobs:
         run: |
           grp="${{ github.event.inputs.group }}"
 
-          git config -f .gitmodules --get-regexp path | while read a b; do
+          git config -f .gitmodules --get-regexp path | while read -r a b; do
             case "$b" in
-              $grp/*)
+              "$grp"/*)
                 git submodule update --init --remote --depth=1 "$b" || true
               ;;
             esac
@@ -186,10 +187,10 @@ jobs:
           grp="${{ github.event.inputs.group }}"
           br="${{ github.event.inputs.branch }}"
 
-          git config -f .gitmodules --get-regexp path | while read a b; do
+          git config -f .gitmodules --get-regexp path | while read -r a b; do
             case "$b" in
-              $grp/*)
-                git config -f .gitmodules submodule.$b.branch "$br"
+              "$grp"/*)
+                git config -f .gitmodules submodule."$b".branch "$br"
                 git submodule update --init --remote --depth=1 "$b" || true
               ;;
             esac
