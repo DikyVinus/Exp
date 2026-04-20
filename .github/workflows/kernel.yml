@@ -42,7 +42,7 @@ jobs:
           fetch-depth: 1
           submodules: false
 
-      - name: Fast host prep
+      - name: Host prep
         run: |
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 || true
@@ -57,11 +57,9 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
           need_pkgs=()
-
           command -v bc >/dev/null 2>&1 || need_pkgs+=(bc)
           command -v patch >/dev/null 2>&1 || need_pkgs+=(patch)
           command -v pahole >/dev/null 2>&1 || need_pkgs+=(pahole)
-
           dpkg -s libelf-dev >/dev/null 2>&1 || need_pkgs+=(libelf-dev)
 
           if [ "${#need_pkgs[@]}" -gt 0 ]; then
@@ -85,6 +83,8 @@ jobs:
 
           test -d "src/${{ inputs.kernel_version }}"
           test -f "src/${{ inputs.kernel_version }}/Makefile"
+          test -f "src/${{ inputs.kernel_version }}/build.config.gki.aarch64"
+          test -f "src/${{ inputs.kernel_version }}/build.config.common"
 
           if [ "${{ inputs.manager }}" != "Vanilla" ]; then
             test -f "manager/${{ inputs.manager }}/kernel/setup.sh"
@@ -109,7 +109,7 @@ jobs:
               ;;
           esac
 
-      - name: Restore Android repo cache
+      - name: Restore repo cache
         uses: actions/cache@v4
         with:
           path: kernel/.repo
@@ -128,15 +128,23 @@ jobs:
               -b "${{ steps.vars.outputs.branch }}"
           fi
 
-      - name: Sync Android sources
+      - name: Sync minimal Android projects
         working-directory: kernel
         run: |
-          repo sync -c -j"$((JOBS * 2))" \
+          projects=(
+            build
+            common
+            prebuilts
+            tools
+          )
+
+          repo sync -c -j"$(nproc)" \
             --optimized-fetch \
             --prune \
             --fail-fast \
             --no-tags \
-            --current-branch
+            --current-branch \
+            "${projects[@]}"
 
           test -f build/build.sh
 
@@ -156,7 +164,7 @@ jobs:
           test -L kernel/common
           test -f kernel/common/Makefile
 
-      - name: Apply manager patch set
+      - name: Apply manager patches
         if: ${{ inputs.manager != 'Vanilla' }}
         run: |
           pushd kernel/common
