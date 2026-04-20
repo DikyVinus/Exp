@@ -1,52 +1,117 @@
-name: Update Submodules
+name: Manage Submodules
 
 on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        required: true
+        default: update
+        type: choice
+        options:
+          - update
+          - add
+          - replace
+          - remove
+          - move
+
+      path:
+        description: Submodule path
+        required: false
+        default: ""
+
+      url:
+        description: Repo URL
+        required: false
+        default: ""
+
+      branch:
+        description: Branch
+        required: false
+        default: ""
+
+      new_path:
+        description: New path (for move)
+        required: false
+        default: ""
+
   repository_dispatch:
-    types: [update-submodules]
+    types: [manage-submodules]
 
 permissions:
   contents: write
 
 jobs:
-  update:
-    runs-on: ubuntu-latest
+  manage:
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          persist-credentials: true
           fetch-depth: 0
+          persist-credentials: true
           submodules: false
 
-      - name: Configure git
+      - name: Git config
         run: |
+          git config user.name github-actions
+          git config user.email actions@github.com
           git config --global protocol.version 2
           git config --global core.compression 0
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-      - name: Sync submodules
+
+      - name: Sync config
         run: |
-          git submodule sync --recursive
-      - name: Update submodules (respect .gitmodules only)
+          git submodule sync --recursive || true
+
+      - name: Update all submodules
+        if: ${{ github.event.inputs.action == 'update' || github.event_name != 'workflow_dispatch' }}
         run: |
-          git config -f .gitmodules --get-regexp path | while read -r key path; do
-            echo "updating $path"
-            git -c submodule.fetchJobs=1 submodule update \
-              --init \
-              --remote \
-              --depth=1 \
-              --filter=blob:none \
-              "$path" || echo "skip $path"
+          git config -f .gitmodules --get-regexp path | while read a b; do
+            git submodule update --init --remote --depth=1 "$b" || true
           done
-      - name: Commit and push if changed
+
+      - name: Add submodule
+        if: ${{ github.event.inputs.action == 'add' }}
         run: |
-          if [[ -n $(git status --porcelain) ]]; then
-            git add .gitmodules
-            git add .
-            git commit -m "auto: update submodules"
+          if [ -n "${{ github.event.inputs.branch }}" ]; then
+            git submodule add -b "${{ github.event.inputs.branch }}" "${{ github.event.inputs.url }}" "${{ github.event.inputs.path }}"
+          else
+            git submodule add "${{ github.event.inputs.url }}" "${{ github.event.inputs.path }}"
+          fi
+
+      - name: Replace submodule
+        if: ${{ github.event.inputs.action == 'replace' }}
+        run: |
+          git submodule deinit -f "${{ github.event.inputs.path }}" || true
+          rm -rf ".git/modules/${{ github.event.inputs.path }}"
+          git rm -f "${{ github.event.inputs.path }}" || true
+
+          if [ -n "${{ github.event.inputs.branch }}" ]; then
+            git submodule add -b "${{ github.event.inputs.branch }}" "${{ github.event.inputs.url }}" "${{ github.event.inputs.path }}"
+          else
+            git submodule add "${{ github.event.inputs.url }}" "${{ github.event.inputs.path }}"
+          fi
+
+      - name: Remove submodule
+        if: ${{ github.event.inputs.action == 'remove' }}
+        run: |
+          git submodule deinit -f "${{ github.event.inputs.path }}" || true
+          rm -rf ".git/modules/${{ github.event.inputs.path }}"
+          git rm -f "${{ github.event.inputs.path }}" || true
+
+      - name: Move submodule
+        if: ${{ github.event.inputs.action == 'move' }}
+        run: |
+          git mv "${{ github.event.inputs.path }}" "${{ github.event.inputs.new_path }}"
+          git config -f .gitmodules submodule.${{ github.event.inputs.path }}.path "${{ github.event.inputs.new_path }}"
+
+      - name: Commit and push
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .gitmodules . || true
+            git commit -m "auto: manage submodules"
             git push
           fi
