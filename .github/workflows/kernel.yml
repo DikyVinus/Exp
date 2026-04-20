@@ -382,7 +382,7 @@ jobs:
               ;;
           esac
 
-          yes "" | make -C kernel/common O="$OUT_DIR" ARCH=arm64 olddefconfig
+          yes "" | make -C kernel/common O="$OUT_DIR" ARCH=arm64 olddefconfig || true
 
           echo "Relevant final config:"
           grep -E 'CONFIG_(KSU|SUSFS|LTO_CLANG)' "$OUT_DIR/.config" || true
