@@ -4,13 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        required: true
         type: choice
-        options: ["5.10", "6.1", "6.6"]
+        required: true
+        options:
+          - "5.10"
+          - "6.1"
+          - "6.6"
 
       manager:
-        required: true
         type: choice
+        required: true
         default: Vanilla
         options:
           - Vanilla
@@ -25,84 +28,63 @@ jobs:
   build:
     runs-on: ubuntu-24.04
 
-    defaults:
-      run:
-        shell: bash
-
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          submodules: false
-
-      - name: Setup repo tool
-        run: |
-          mkdir -p "$HOME/bin"
-          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          echo "JOBS=$(nproc)" >> "$GITHUB_ENV"
 
       - name: Init submodules
         run: |
-          git submodule update --init --depth=1 "src/${{ inputs.kernel_version }}"
+          git submodule update --init --depth=1 src/${{ inputs.kernel_version }}
+
           if [ "${{ inputs.manager }}" != "Vanilla" ]; then
-            git submodule update --init --depth=1 "manager/${{ inputs.manager }}"
+            git submodule update --init --depth=1 manager/${{ inputs.manager }}
           fi
 
       - name: Pick branch
-        id: vars
         run: |
-          case "${{ inputs.kernel_version }}" in
-            5.10) echo "branch=common-android12-5.10" >> "$GITHUB_OUTPUT" ;;
-            6.1) echo "branch=common-android14-6.1" >> "$GITHUB_OUTPUT" ;;
-            6.6) echo "branch=common-android15-6.6" >> "$GITHUB_OUTPUT" ;;
-          esac
+          if [ "${{ inputs.kernel_version }}" = "5.10" ]; then echo "BRANCH=common-android12-5.10" >> $GITHUB_ENV; fi
+          if [ "${{ inputs.kernel_version }}" = "6.1" ]; then echo "BRANCH=common-android14-6.1" >> $GITHUB_ENV; fi
+          if [ "${{ inputs.kernel_version }}" = "6.6" ]; then echo "BRANCH=common-android15-6.6" >> $GITHUB_ENV; fi
 
-      - name: Init repo
+      - name: Direct clone minimal tree
         run: |
           mkdir kernel
           cd kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b "${{ steps.vars.outputs.branch }}"
 
-      - name: Sync repo
-        run: |
-          cd kernel
-          repo sync -c -j"$(nproc)" --no-tags --current-branch
+          git clone --depth=1 -b $BRANCH https://android.googlesource.com/kernel/build build
+          git clone --depth=1 -b $BRANCH https://android.googlesource.com/kernel/prebuilts/build-tools prebuilts-build-tools
+          git clone --depth=1 -b $BRANCH https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts-clang
 
-      - name: Replace common
+          mkdir -p prebuilts/build-tools
+          mkdir -p prebuilts/clang/host
+
+          mv prebuilts-build-tools prebuilts/build-tools
+          mv prebuilts-clang prebuilts/clang/host/linux-x86
+
+      - name: Add custom common
         run: |
-          rm -rf kernel/common
-          mkdir -p kernel/common
-          cp -a "src/${{ inputs.kernel_version }}/." kernel/common/
+          cp -a src/${{ inputs.kernel_version }} kernel/common
 
       - name: Patch manager
         if: ${{ inputs.manager != 'Vanilla' }}
         run: |
           cd kernel/common
-          bash "${GITHUB_WORKSPACE}/manager/${{ inputs.manager }}/kernel/setup.sh"
+          bash $GITHUB_WORKSPACE/manager/${{ inputs.manager }}/kernel/setup.sh
 
       - name: Build
         run: |
           cd kernel
-          export KERNEL_DIR=common
           export BUILD_CONFIG=common/build.config.gki.aarch64
-          export OUT_DIR="$PWD/out"
-          export DIST_DIR="$PWD/out/dist"
-          export MAKEFLAGS="-j$JOBS"
-          export NINJA_ARGS="-j$JOBS"
           bash build/build.sh
 
-      - name: Pack AK3
+      - name: Pack
         run: |
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
-          IMG="$(find kernel/out -type f \( -name 'Image' -o -name 'Image.gz' \) | head -n1)"
-          cp "$IMG" ak3/
+          cp $(find kernel -name Image | head -n1) ak3/
           cd ak3
-          zip -r9 "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip" .
+          zip -r kernel.zip .
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}
-          path: ak3/*.zip
+          name: kernel
+          path: ak3/kernel.zip
