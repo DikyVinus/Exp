@@ -422,6 +422,7 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
+          export KERNEL_DIR=common
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR="$PWD/out"
           export DIST_DIR="$PWD/out/dist"
