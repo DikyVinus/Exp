@@ -9,12 +9,6 @@ on:
         type: choice
         options: ["5.10", "6.1", "6.6"]
 
-      kernel_commit:
-        description: "Optional kernel/common commit override"
-        required: false
-        default: ""
-        type: string
-
       manager:
         description: "Root manager"
         required: true
@@ -29,45 +23,6 @@ on:
           - Rissu
           - Wild_KSU
 
-      manager_commit:
-        description: "Optional manager commit override"
-        required: false
-        default: ""
-        type: string
-
-      lto_mode:
-        description: "LTO mode"
-        required: true
-        type: choice
-        options: [thin, full, none]
-
-      susfs:
-        description: "Apply SUSFS"
-        required: true
-        type: choice
-        options: ["no", "yes"]
-
-      susfs_commit:
-        description: "Optional SUSFS commit override"
-        required: false
-        default: ""
-        type: string
-
-      llvm_url:
-        description: "Optional override: LLVM Linux x86_64 tar.xz URL"
-        required: false
-        default: ""
-        type: string
-
-      llvm_label:
-        description: "Optional override label for the toolchain"
-        required: false
-        default: ""
-        type: string
-
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -81,16 +36,11 @@ jobs:
           echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 || true
 
-          git config --global protocol.version 2
-          git config --global core.compression 0
-          git config --global fetch.parallel "$(nproc)"
-
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            git zip unzip curl wget ccache rsync ca-certificates \
-            bc bison flex libssl-dev libelf-dev python3 dwarves \
-            pahole file xz-utils zstd jq \
-            libarchive-tools patch make
+            git curl wget zip unzip repo \
+            bc bison flex libssl-dev libelf-dev python3 \
+            dwarves pahole file xz-utils zstd rsync patch make
 
           mkdir -p ~/bin
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
@@ -98,8 +48,6 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
           echo "JOBS=$(nproc)" >> "$GITHUB_ENV"
-          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
-          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
 
       - name: Check out workflow repo
         uses: actions/checkout@v4
@@ -107,101 +55,25 @@ jobs:
           fetch-depth: 1
           submodules: false
 
-      - name: Resolve latest LLVM Linux x86_64
-        id: llvmmeta
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Init needed submodules
         run: |
-          API="https://api.github.com/repos/llvm/llvm-project/releases/latest"
-
-          if [ -n "${{ inputs.llvm_url }}" ]; then
-            llvm_url="${{ inputs.llvm_url }}"
-          else
-            curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              "$API" > llvm-latest.json
-
-            llvm_url="$(jq -r '
-              .assets[]
-              | select(.name | test("^LLVM-[0-9][^/]*-Linux-X64\\.tar\\.xz$"))
-              | .browser_download_url
-            ' llvm-latest.json | head -n1)"
-
-            if [ -z "$llvm_url" ] || [ "$llvm_url" = "null" ]; then
-              echo "Failed to resolve latest LLVM Linux x86_64 asset"
-              jq -r '.tag_name, (.assets[]?.name)' llvm-latest.json || true
-              exit 1
-            fi
-          fi
-
-          llvm_file="$(basename "${llvm_url%%\?*}")"
-          if [ -n "${{ inputs.llvm_label }}" ]; then
-            llvm_label="${{ inputs.llvm_label }}"
-          else
-            llvm_label="${llvm_file%.tar.xz}"
-          fi
-
-          echo "llvm_url=$llvm_url" >> "$GITHUB_OUTPUT"
-          echo "llvm_label=$llvm_label" >> "$GITHUB_OUTPUT"
-
-      - name: Download and install LLVM
-        run: |
-          mkdir -p toolchain
-          wget -O llvm.tar.xz "${{ steps.llvmmeta.outputs.llvm_url }}"
-          bsdtar -xpf llvm.tar.xz -C toolchain
-
-          LLVM_ROOT="$(find toolchain -mindepth 1 -maxdepth 1 -type d | head -n1)"
-          test -n "$LLVM_ROOT"
-          test -x "$LLVM_ROOT/bin/clang"
-          test -x "$LLVM_ROOT/bin/ld.lld"
-
-          echo "LLVM_ROOT=$LLVM_ROOT" >> "$GITHUB_ENV"
-
-      - name: Show toolchain
-        run: |
-          "$LLVM_ROOT/bin/clang" --version
-          "$LLVM_ROOT/bin/ld.lld" --version
-          "$LLVM_ROOT/bin/llvm-ar" --version
-
-      - name: Init submodules
-        run: |
-          git -c submodule.fetchJobs="$JOBS" submodule update \
-            --init --depth=1 --filter=blob:none \
-            "src/${{ inputs.kernel_version }}"
+          git submodule update --init --depth=1 "src/${{ inputs.kernel_version }}"
 
           if [ "${{ inputs.manager }}" != "Vanilla" ]; then
-            git -c submodule.fetchJobs="$JOBS" submodule update \
-              --init --depth=1 --filter=blob:none \
-              "manager/${{ inputs.manager }}"
+            git submodule update --init --depth=1 "manager/${{ inputs.manager }}"
           fi
 
-          test -d "src/${{ inputs.kernel_version }}"
-          if [ "${{ inputs.manager }}" != "Vanilla" ]; then
-            test -d "manager/${{ inputs.manager }}"
-          fi
-
-      - name: Override manager commit
-        if: ${{ inputs.manager != 'Vanilla' && inputs.manager_commit != '' }}
-        run: |
-          git -C "manager/${{ inputs.manager }}" fetch origin "${{ inputs.manager_commit }}" --depth=1
-          git -C "manager/${{ inputs.manager }}" checkout --detach FETCH_HEAD
-          git -C "manager/${{ inputs.manager }}" log --oneline -1
-
-      - name: Resolve Android branch metadata
+      - name: Resolve Android branch
         id: vars
         run: |
           case "${{ inputs.kernel_version }}" in
             5.10)
-              echo "android=android12" >> "$GITHUB_OUTPUT"
               echo "branch=common-android12-5.10" >> "$GITHUB_OUTPUT"
               ;;
             6.1)
-              echo "android=android14" >> "$GITHUB_OUTPUT"
               echo "branch=common-android14-6.1" >> "$GITHUB_OUTPUT"
               ;;
             6.6)
-              echo "android=android15" >> "$GITHUB_OUTPUT"
               echo "branch=common-android15-6.6" >> "$GITHUB_OUTPUT"
               ;;
             *)
@@ -210,23 +82,12 @@ jobs:
               ;;
           esac
 
-      - name: Restore repo cache
-        uses: actions/cache@v4
-        with:
-          path: kernel/.repo
-          key: repo-${{ steps.vars.outputs.branch }}
-          restore-keys: |
-            repo-${{ steps.vars.outputs.branch }}
-
       - name: Init Android kernel repo
         run: |
           mkdir -p kernel
           cd kernel
-
-          if [ ! -d .repo ]; then
-            repo init -u https://android.googlesource.com/kernel/manifest \
-              -b "${{ steps.vars.outputs.branch }}"
-          fi
+          repo init -u https://android.googlesource.com/kernel/manifest \
+            -b "${{ steps.vars.outputs.branch }}"
 
       - name: Sync kernel sources
         working-directory: kernel
@@ -234,41 +95,17 @@ jobs:
           REPO_SYNC_FORCE_IPV4=1 repo sync -c -j"$((JOBS * 2))" \
             --optimized-fetch --prune --fail-fast \
             --no-tags --current-branch
-            
-          test -f build/build.sh || true
-          ls -la
-          git -C common log --oneline -1 || true
-          
-      - name: Replace kernel/common with linked custom source
-        run: |
-          SRC_REAL="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
-          SRC_LINK="../src/${{ inputs.kernel_version }}"
 
-          test -d "$SRC_REAL"
-          test -f "$SRC_REAL/Makefile"
-          test -d "$SRC_REAL/arch"
-          test -f "$SRC_REAL/build.config.gki.aarch64"
-          test -f "$SRC_REAL/build.config.common"
+      - name: Replace kernel/common with custom source
+        run: |
+          test -d "src/${{ inputs.kernel_version }}"
+          test -f "src/${{ inputs.kernel_version }}/Makefile"
 
           rm -rf kernel/common
-          ln -s "$SRC_LINK" kernel/common
+          ln -s "$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}" kernel/common
 
           test -L kernel/common
           test -f kernel/common/Makefile
-          test -d kernel/common/arch
-          test -f kernel/common/build.config.gki.aarch64
-          test -f kernel/common/build.config.common
-
-          echo "kernel/common -> $(readlink kernel/common)"
-
-      - name: Override kernel commit
-        if: ${{ inputs.kernel_commit != '' }}
-        run: |
-          SRC_REAL="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
-
-          git -C "$SRC_REAL" fetch origin "${{ inputs.kernel_commit }}" --depth=1
-          git -C "$SRC_REAL" checkout --detach FETCH_HEAD
-          git -C "$SRC_REAL" log --oneline -1
 
       - name: Apply manager patches
         if: ${{ inputs.manager != 'Vanilla' }}
@@ -279,149 +116,15 @@ jobs:
           bash "${GITHUB_WORKSPACE}/manager/${{ inputs.manager }}/kernel/setup.sh"
           popd
 
-      - name: Fetch and apply SUSFS
-        if: ${{ inputs.susfs == 'yes' }}
-        run: |
-          SUSFS_DIR="$GITHUB_WORKSPACE/susfs"
-          SUSFS_BRANCH="gki-${{ steps.vars.outputs.android }}-${{ inputs.kernel_version }}"
-
-          rm -rf "$SUSFS_DIR"
-
-          if [ -n "${{ inputs.susfs_commit }}" ]; then
-            git init "$SUSFS_DIR"
-            git -C "$SUSFS_DIR" remote add origin https://gitlab.com/simonpunk/susfs4ksu.git
-            git -C "$SUSFS_DIR" fetch --depth=1 origin "${{ inputs.susfs_commit }}"
-            git -C "$SUSFS_DIR" checkout --detach FETCH_HEAD
-          else
-            git clone --depth=1 --filter=blob:none -b "$SUSFS_BRANCH" \
-              https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_DIR"
-          fi
-
-          git -C "$SUSFS_DIR" log --oneline -1
-
-          test -d "$SUSFS_DIR/kernel_patches/fs"
-          test -d "$SUSFS_DIR/kernel_patches/include/linux"
-
-          rsync -a "$SUSFS_DIR/kernel_patches/fs/" "kernel/common/fs/"
-          rsync -a "$SUSFS_DIR/kernel_patches/include/linux/" "kernel/common/include/linux/"
-
-          PATCH_FILE="$(find "$SUSFS_DIR/kernel_patches" -type f -name '50_add_susfs_in_*.patch' | sort | head -n1)"
-          test -n "$PATCH_FILE"
-
-          pushd kernel/common
-          patch -p1 --forward --reject-file=- < "$PATCH_FILE"
-          popd
-
-      - name: Replace prebuilt clang toolchain by symlink trick
-        run: |
-          mkdir -p kernel/prebuilts/clang/host/linux-x86
-          rm -rf kernel/prebuilts/clang/host/linux-x86/clang-custom
-          ln -s "$LLVM_ROOT" kernel/prebuilts/clang/host/linux-x86/clang-custom
-
-          if [ -d kernel/prebuilts/clang/host/linux-x86/clang-r*/bin ] || [ -d kernel/prebuilts/clang/host/linux-x86/clang-* ]; then
-            find kernel/prebuilts/clang/host/linux-x86 -maxdepth 1 -mindepth 1 -type d | while read -r d; do
-              base="$(basename "$d")"
-              [ "$base" = "clang-custom" ] && continue
-              rm -rf "$d"
-              ln -s "$LLVM_ROOT" "kernel/prebuilts/clang/host/linux-x86/$base"
-            done
-          else
-            ln -sfn "$LLVM_ROOT" kernel/prebuilts/clang/host/linux-x86/clang-r498229b
-          fi
-
-          find kernel/prebuilts/clang/host/linux-x86 -maxdepth 2 -ls || true
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ inputs.lto_mode }}-${{ steps.llvmmeta.outputs.llvm_label }}
-          restore-keys: |
-            ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ inputs.lto_mode }}-
-            ccache-${{ inputs.kernel_version }}-${{ inputs.manager }}-
-            ccache-${{ inputs.kernel_version }}-
-
       - name: Configure kernel
         run: |
           OUT_DIR="$GITHUB_WORKSPACE/kernel/out"
-
           make -C kernel/common O="$OUT_DIR" ARCH=arm64 gki_defconfig
-
-          test -x kernel/common/scripts/config || chmod +x kernel/common/scripts/config
-
-          cfg_enable() {
-            kernel/common/scripts/config --file "$OUT_DIR/.config" -e "$1"
-          }
-
-          cfg_disable() {
-            kernel/common/scripts/config --file "$OUT_DIR/.config" -d "$1"
-          }
-
-          if [ "${{ inputs.susfs }}" = "yes" ]; then
-            for sym in \
-              KSU_SUSFS \
-              KSU_SUS_PATH \
-              KSU_SUS_MOUNT \
-              KSU_SUS_KSTAT \
-              KSU_SPOOF_UNAME \
-              KSU_OPEN_REDIRECT \
-              KSU_SUS_MAP \
-              KSU_ENABLE_LOG \
-              KSU_HIDE_KSU_SUSFS_SYMBOLS \
-              KSU_SPOOF_CMDLINE_OR_BOOTCONFIG
-            do
-              cfg_enable "$sym" || true
-            done
-          fi
-
-          case "${{ inputs.lto_mode }}" in
-            thin)
-              cfg_enable LTO_CLANG || true
-              cfg_enable LTO_CLANG_THIN || true
-              cfg_disable LTO_CLANG_FULL || true
-              ;;
-            full)
-              cfg_enable LTO_CLANG || true
-              cfg_enable LTO_CLANG_FULL || true
-              cfg_disable LTO_CLANG_THIN || true
-              ;;
-            none)
-              cfg_disable LTO_CLANG || true
-              cfg_disable LTO_CLANG_THIN || true
-              cfg_disable LTO_CLANG_FULL || true
-              ;;
-          esac
-
           yes "" | make -C kernel/common O="$OUT_DIR" ARCH=arm64 olddefconfig || true
 
-          echo "Relevant final config:"
-          grep -E 'CONFIG_(KSU|SUSFS|LTO_CLANG)' "$OUT_DIR/.config" || true
-
-          if [ "${{ inputs.susfs }}" = "yes" ]; then
-            grep -q '^CONFIG_KSU_SUSFS=y' "$OUT_DIR/.config" || true
-          fi
-
-          ccache -M 5G
-          ccache -s
-
-      - name: Build kernel with repo build.sh
+      - name: Build kernel
         working-directory: kernel
         run: |
-          export PATH="$LLVM_ROOT/bin:$PATH"
-
-          export CC="ccache clang"
-          export HOSTCC="ccache clang"
-          export HOSTCXX="ccache clang++"
-          export LD="ld.lld"
-          export AR="llvm-ar"
-          export NM="llvm-nm"
-          export OBJCOPY="llvm-objcopy"
-          export OBJDUMP="llvm-objdump"
-          export STRIP="llvm-strip"
-          export READELF="llvm-readelf"
-          export LLVM=1
-          export LLVM_IAS=1
-
           export KERNEL_DIR=common
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR="$PWD/out"
@@ -431,23 +134,16 @@ jobs:
 
           bash build/build.sh
 
-          echo "Build outputs:"
-          find out -maxdepth 4 -type f | sort | tail -200
-
       - name: Package with AnyKernel3
         run: |
-          git clone --depth=1 --filter=blob:none \
-            https://github.com/DikyVinus/AnyKernel3 ak3
+          git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
 
           IMG="$(find kernel/out -type f \( -name 'Image' -o -name 'Image.gz' \) | head -n1)"
-          if [ -z "$IMG" ]; then
-            echo "Kernel image not found"
-            exit 1
-          fi
+          test -n "$IMG"
 
           install -m644 "$IMG" ak3/
           cd ak3
-          zip -r9 -q "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}-${{ steps.llvmmeta.outputs.llvm_label }}.zip" .
+          zip -r9 -q "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip" .
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
