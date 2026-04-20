@@ -238,7 +238,7 @@ jobs:
           test -f build/build.sh || true
           ls -la
           git -C common log --oneline -1 || true
-
+          
 - name: Replace kernel/common with linked custom source
         run: |
           SRC_REAL="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
