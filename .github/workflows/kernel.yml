@@ -23,44 +23,71 @@ on:
           - Rissu
           - Wild_KSU
 
+env:
+  REPO_SYNC_FORCE_IPV4: 1
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
     defaults:
       run:
         shell: bash -euo pipefail {0}
 
     steps:
-      - name: Setup host
-        run: |
-          echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
-          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 || true
-
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            git curl wget zip unzip repo \
-            bc bison flex libssl-dev libelf-dev python3 \
-            dwarves pahole file xz-utils zstd rsync patch make
-
-          mkdir -p ~/bin
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
-          chmod +x ~/bin/repo
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-
-          echo "JOBS=$(nproc)" >> "$GITHUB_ENV"
-
-      - name: Check out workflow repo
+      - name: Checkout workflow repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           submodules: false
 
-      - name: Init needed submodules
+      - name: Fast host prep
         run: |
-          git submodule update --init --depth=1 "src/${{ inputs.kernel_version }}"
+          echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 || true
+
+          git config --global protocol.version 2
+          git config --global core.compression 0
+          git config --global fetch.parallel "$(nproc)"
+
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+          need_pkgs=()
+
+          command -v bc >/dev/null 2>&1 || need_pkgs+=(bc)
+          command -v patch >/dev/null 2>&1 || need_pkgs+=(patch)
+          command -v pahole >/dev/null 2>&1 || need_pkgs+=(pahole)
+
+          dpkg -s libelf-dev >/dev/null 2>&1 || need_pkgs+=(libelf-dev)
+
+          if [ "${#need_pkgs[@]}" -gt 0 ]; then
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends "${need_pkgs[@]}"
+          fi
+
+          echo "JOBS=$(nproc)" >> "$GITHUB_ENV"
+
+      - name: Init required submodules
+        run: |
+          git -c submodule.fetchJobs="$JOBS" submodule update \
+            --init --depth=1 --filter=blob:none \
+            "src/${{ inputs.kernel_version }}"
 
           if [ "${{ inputs.manager }}" != "Vanilla" ]; then
-            git submodule update --init --depth=1 "manager/${{ inputs.manager }}"
+            git -c submodule.fetchJobs="$JOBS" submodule update \
+              --init --depth=1 --filter=blob:none \
+              "manager/${{ inputs.manager }}"
+          fi
+
+          test -d "src/${{ inputs.kernel_version }}"
+          test -f "src/${{ inputs.kernel_version }}/Makefile"
+
+          if [ "${{ inputs.manager }}" != "Vanilla" ]; then
+            test -f "manager/${{ inputs.manager }}/kernel/setup.sh"
           fi
 
       - name: Resolve Android branch
@@ -77,50 +104,64 @@ jobs:
               echo "branch=common-android15-6.6" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "Unsupported kernel version"
+              echo "Unsupported kernel version: ${{ inputs.kernel_version }}"
               exit 1
               ;;
           esac
+
+      - name: Restore Android repo cache
+        uses: actions/cache@v4
+        with:
+          path: kernel/.repo
+          key: repo-${{ steps.vars.outputs.branch }}
+          restore-keys: |
+            repo-${{ steps.vars.outputs.branch }}
 
       - name: Init Android kernel repo
         run: |
           mkdir -p kernel
           cd kernel
-          repo init -u https://android.googlesource.com/kernel/manifest \
-            -b "${{ steps.vars.outputs.branch }}"
 
-      - name: Sync kernel sources
+          if [ ! -d .repo ]; then
+            repo init \
+              -u https://android.googlesource.com/kernel/manifest \
+              -b "${{ steps.vars.outputs.branch }}"
+          fi
+
+      - name: Sync Android sources
         working-directory: kernel
         run: |
-          REPO_SYNC_FORCE_IPV4=1 repo sync -c -j"$((JOBS * 2))" \
-            --optimized-fetch --prune --fail-fast \
-            --no-tags --current-branch
+          repo sync -c -j"$((JOBS * 2))" \
+            --optimized-fetch \
+            --prune \
+            --fail-fast \
+            --no-tags \
+            --current-branch
+
+          test -f build/build.sh
 
       - name: Replace kernel/common with custom source
         run: |
-          test -d "src/${{ inputs.kernel_version }}"
-          test -f "src/${{ inputs.kernel_version }}/Makefile"
+          SRC_REAL="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
+
+          test -d "$SRC_REAL"
+          test -f "$SRC_REAL/Makefile"
+          test -d "$SRC_REAL/arch"
+          test -f "$SRC_REAL/build.config.gki.aarch64"
+          test -f "$SRC_REAL/build.config.common"
 
           rm -rf kernel/common
-          ln -s "$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}" kernel/common
+          ln -s "$SRC_REAL" kernel/common
 
           test -L kernel/common
           test -f kernel/common/Makefile
 
-      - name: Apply manager patches
+      - name: Apply manager patch set
         if: ${{ inputs.manager != 'Vanilla' }}
         run: |
-          test -f "manager/${{ inputs.manager }}/kernel/setup.sh"
-
           pushd kernel/common
           bash "${GITHUB_WORKSPACE}/manager/${{ inputs.manager }}/kernel/setup.sh"
           popd
-
-      - name: Configure kernel
-        run: |
-          OUT_DIR="$GITHUB_WORKSPACE/kernel/out"
-          make -C kernel/common O="$OUT_DIR" ARCH=arm64 gki_defconfig
-          yes "" | make -C kernel/common O="$OUT_DIR" ARCH=arm64 olddefconfig || true
 
       - name: Build kernel
         working-directory: kernel
@@ -136,7 +177,8 @@ jobs:
 
       - name: Package with AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
+          git clone --depth=1 --filter=blob:none \
+            https://github.com/DikyVinus/AnyKernel3 ak3
 
           IMG="$(find kernel/out -type f \( -name 'Image' -o -name 'Image.gz' \) | head -n1)"
           test -n "$IMG"
@@ -145,8 +187,9 @@ jobs:
           cd ak3
           zip -r9 -q "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip" .
 
-      - name: Upload kernel artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel
+          name: kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}
           path: ak3/*.zip
+          if-no-files-found: error
