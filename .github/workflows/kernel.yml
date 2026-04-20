@@ -157,14 +157,12 @@ jobs:
           test -x "$LLVM_ROOT/bin/ld.lld"
 
           echo "LLVM_ROOT=$LLVM_ROOT" >> "$GITHUB_ENV"
-          echo "$LLVM_ROOT/bin" >> "$GITHUB_PATH"
 
       - name: Show toolchain
         run: |
-          command -v clang
-          clang --version
-          ld.lld --version
-          llvm-ar --version
+          "$LLVM_ROOT/bin/clang" --version
+          "$LLVM_ROOT/bin/ld.lld" --version
+          "$LLVM_ROOT/bin/llvm-ar" --version
 
       - name: Init submodules
         run: |
@@ -230,13 +228,6 @@ jobs:
               -b "${{ steps.vars.outputs.branch }}"
           fi
 
-          mkdir -p .repo/local_manifests
-          cat > .repo/local_manifests/remove.xml <<'EOF'
-          <manifest>
-            <remove-project name="kernel/common"/>
-          </manifest>
-          EOF
-
       - name: Sync kernel sources
         working-directory: kernel
         run: |
@@ -244,17 +235,24 @@ jobs:
             --optimized-fetch --prune --fail-fast \
             --no-tags --current-branch
 
-          mkdir -p common
+          test -d common
+          test -f build/build.sh || true
           ls -la
+          git -C common log --oneline -1 || true
 
-      - name: Inject custom source tree
+      - name: Replace kernel/common with linked custom source
         run: |
-          rsync -a --delete --checksum \
-            "src/${{ inputs.kernel_version }}/" \
-            "kernel/common/"
+          KERNEL_LINK_TARGET="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
+          test -d "$KERNEL_LINK_TARGET"
+          test -f "$KERNEL_LINK_TARGET/Makefile"
+          test -d "$KERNEL_LINK_TARGET/arch"
 
-          test -d kernel/common/arch
+          rm -rf kernel/common
+          ln -s "$KERNEL_LINK_TARGET" kernel/common
+
+          test -L kernel/common
           test -f kernel/common/Makefile
+          test -d kernel/common/arch
 
       - name: Override kernel commit
         if: ${{ inputs.kernel_commit != '' }}
@@ -304,6 +302,25 @@ jobs:
           pushd kernel/common
           patch -p1 --forward --reject-file=- < "$PATCH_FILE"
           popd
+
+      - name: Replace prebuilt clang toolchain by symlink trick
+        run: |
+          mkdir -p kernel/prebuilts/clang/host/linux-x86
+          rm -rf kernel/prebuilts/clang/host/linux-x86/clang-custom
+          ln -s "$LLVM_ROOT" kernel/prebuilts/clang/host/linux-x86/clang-custom
+
+          if [ -d kernel/prebuilts/clang/host/linux-x86/clang-r*/bin ] || [ -d kernel/prebuilts/clang/host/linux-x86/clang-* ]; then
+            find kernel/prebuilts/clang/host/linux-x86 -maxdepth 1 -mindepth 1 -type d | while read -r d; do
+              base="$(basename "$d")"
+              [ "$base" = "clang-custom" ] && continue
+              rm -rf "$d"
+              ln -s "$LLVM_ROOT" "kernel/prebuilts/clang/host/linux-x86/$base"
+            done
+          else
+            ln -sfn "$LLVM_ROOT" kernel/prebuilts/clang/host/linux-x86/clang-r498229b
+          fi
+
+          find kernel/prebuilts/clang/host/linux-x86 -maxdepth 2 -ls || true
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -378,82 +395,7 @@ jobs:
           ccache -M 5G
           ccache -s
 
-      - name: Create local build.sh
-        run: |
-          mkdir -p kernel/build
-          cat > kernel/build/build.sh <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-          cd "$ROOT_DIR"
-
-          : "${BUILD_CONFIG:=common/build.config.gki.aarch64}"
-          : "${OUT_DIR:=$ROOT_DIR/out}"
-          : "${DIST_DIR:=$OUT_DIR/dist}"
-          : "${JOBS:=$(nproc)}"
-
-          if [ ! -f "$BUILD_CONFIG" ]; then
-            echo "Missing BUILD_CONFIG: $BUILD_CONFIG"
-            exit 1
-          fi
-
-          export ROOT_DIR OUT_DIR DIST_DIR
-          export ARCH="${ARCH:-arm64}"
-          export SUBARCH="${SUBARCH:-arm64}"
-
-          export LLVM="${LLVM:-1}"
-          export LLVM_IAS="${LLVM_IAS:-1}"
-
-          export CC="${CC:-clang}"
-          export HOSTCC="${HOSTCC:-clang}"
-          export HOSTCXX="${HOSTCXX:-clang++}"
-          export LD="${LD:-ld.lld}"
-          export AR="${AR:-llvm-ar}"
-          export NM="${NM:-llvm-nm}"
-          export STRIP="${STRIP:-llvm-strip}"
-          export OBJCOPY="${OBJCOPY:-llvm-objcopy}"
-          export OBJDUMP="${OBJDUMP:-llvm-objdump}"
-          export READELF="${READELF:-llvm-readelf}"
-
-          # Source build config in a compatible way.
-          # Newer trees may keep this file mainly for external use.
-          set +u
-          . "$BUILD_CONFIG"
-          set -u
-
-          mkdir -p "$OUT_DIR" "$DIST_DIR"
-
-          if [ ! -f "$OUT_DIR/.config" ]; then
-            make -C common O="$OUT_DIR" ARCH="$ARCH" gki_defconfig
-          fi
-
-          make -C common \
-            O="$OUT_DIR" \
-            ARCH="$ARCH" \
-            LLVM="$LLVM" \
-            LLVM_IAS="$LLVM_IAS" \
-            CC="$CC" \
-            HOSTCC="$HOSTCC" \
-            HOSTCXX="$HOSTCXX" \
-            LD="$LD" \
-            AR="$AR" \
-            NM="$NM" \
-            STRIP="$STRIP" \
-            OBJCOPY="$OBJCOPY" \
-            OBJDUMP="$OBJDUMP" \
-            READELF="$READELF" \
-            -j"${JOBS}" \
-            ${MAKE_GOALS:-Image Image.gz modules}
-
-          find "$OUT_DIR" -type f \( -name 'Image' -o -name 'Image.gz' -o -name '*.ko' \) -exec cp -f {} "$DIST_DIR"/ \; || true
-
-          echo "Dist contents:"
-          find "$DIST_DIR" -maxdepth 2 -type f | sort || true
-          EOF
-          chmod +x kernel/build/build.sh
-
-      - name: Build kernel with local build.sh and downloaded LLVM
+      - name: Build kernel with repo build.sh
         working-directory: kernel
         run: |
           export PATH="$LLVM_ROOT/bin:$PATH"
@@ -474,7 +416,8 @@ jobs:
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export OUT_DIR="$PWD/out"
           export DIST_DIR="$PWD/out/dist"
-          export JOBS="$JOBS"
+          export MAKEFLAGS="-j$JOBS"
+          export NINJA_ARGS="-j$JOBS"
 
           bash build/build.sh
 
