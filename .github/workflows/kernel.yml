@@ -239,26 +239,36 @@ jobs:
           ls -la
           git -C common log --oneline -1 || true
 
-      - name: Replace kernel/common with linked custom source
+- name: Replace kernel/common with linked custom source
         run: |
-          KERNEL_LINK_TARGET="../src/${{ inputs.kernel_version }}"
-          test -d "$KERNEL_LINK_TARGET"
-          test -f "$KERNEL_LINK_TARGET/Makefile"
-          test -d "$KERNEL_LINK_TARGET/arch"
+          SRC_REAL="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
+          SRC_LINK="../src/${{ inputs.kernel_version }}"
+
+          test -d "$SRC_REAL"
+          test -f "$SRC_REAL/Makefile"
+          test -d "$SRC_REAL/arch"
+          test -f "$SRC_REAL/build.config.gki.aarch64"
+          test -f "$SRC_REAL/build.config.common"
 
           rm -rf kernel/common
-          ln -s "$KERNEL_LINK_TARGET" kernel/common
+          ln -s "$SRC_LINK" kernel/common
 
           test -L kernel/common
           test -f kernel/common/Makefile
           test -d kernel/common/arch
+          test -f kernel/common/build.config.gki.aarch64
+          test -f kernel/common/build.config.common
+
+          echo "kernel/common -> $(readlink kernel/common)"
 
       - name: Override kernel commit
         if: ${{ inputs.kernel_commit != '' }}
         run: |
-          git -C kernel/common fetch origin "${{ inputs.kernel_commit }}" --depth=1
-          git -C kernel/common checkout --detach FETCH_HEAD
-          git -C kernel/common log --oneline -1
+          SRC_REAL="$GITHUB_WORKSPACE/src/${{ inputs.kernel_version }}"
+
+          git -C "$SRC_REAL" fetch origin "${{ inputs.kernel_commit }}" --depth=1
+          git -C "$SRC_REAL" checkout --detach FETCH_HEAD
+          git -C "$SRC_REAL" log --oneline -1
 
       - name: Apply manager patches
         if: ${{ inputs.manager != 'Vanilla' }}
