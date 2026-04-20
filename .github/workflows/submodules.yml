@@ -1,56 +1,108 @@
-name: Update Submodules
+name: Build Kernel
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
   workflow_dispatch:
-  repository_dispatch:
-    types: [update-submodules]
+    inputs:
+      kernel_version:
+        required: true
+        type: choice
+        options: ["5.10", "6.1", "6.6"]
 
-permissions:
-  contents: write
+      manager:
+        required: true
+        type: choice
+        default: Vanilla
+        options:
+          - Vanilla
+          - KernelSU
+          - KowSU
+          - KernelSU-Next
+          - ResukiSU
+          - Rissu
+          - Wild_KSU
 
 jobs:
-  update:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          persist-credentials: true
-          fetch-depth: 0
+          fetch-depth: 1
           submodules: false
 
-      - name: Configure git
+      - name: Setup repo tool
         run: |
-          git config --global protocol.version 2
-          git config --global core.compression 0
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+          mkdir -p "$HOME/bin"
+          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "JOBS=$(nproc)" >> "$GITHUB_ENV"
 
-      - name: Sync submodules
+      - name: Init submodules
         run: |
-          git submodule sync --recursive
-
-      - name: Update submodules (respect .gitmodules only)
-        run: |
-          git config -f .gitmodules --get-regexp path | while read -r key path; do
-            echo "updating $path"
-
-            git -c submodule.fetchJobs=1 submodule update \
-              --init \
-              --remote \
-              --depth=1 \
-              --filter=blob:none \
-              "$path" || echo "skip $path"
-          done
-
-      - name: Commit and push if changed
-        run: |
-          if [[ -n $(git status --porcelain) ]]; then
-            git add .gitmodules
-            git add .
-            git commit -m "auto: update submodules"
-            git push
+          git submodule update --init --depth=1 "src/${{ inputs.kernel_version }}"
+          if [ "${{ inputs.manager }}" != "Vanilla" ]; then
+            git submodule update --init --depth=1 "manager/${{ inputs.manager }}"
           fi
+
+      - name: Pick branch
+        id: vars
+        run: |
+          case "${{ inputs.kernel_version }}" in
+            5.10) echo "branch=common-android12-5.10" >> "$GITHUB_OUTPUT" ;;
+            6.1) echo "branch=common-android14-6.1" >> "$GITHUB_OUTPUT" ;;
+            6.6) echo "branch=common-android15-6.6" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Init repo
+        run: |
+          mkdir kernel
+          cd kernel
+          repo init -u https://android.googlesource.com/kernel/manifest -b "${{ steps.vars.outputs.branch }}"
+
+      - name: Sync repo
+        run: |
+          cd kernel
+          repo sync -c -j"$(nproc)" --no-tags --current-branch
+
+      - name: Replace common
+        run: |
+          rm -rf kernel/common
+          mkdir -p kernel/common
+          cp -a "src/${{ inputs.kernel_version }}/." kernel/common/
+
+      - name: Patch manager
+        if: ${{ inputs.manager != 'Vanilla' }}
+        run: |
+          cd kernel/common
+          bash "${GITHUB_WORKSPACE}/manager/${{ inputs.manager }}/kernel/setup.sh"
+
+      - name: Build
+        run: |
+          cd kernel
+          export KERNEL_DIR=common
+          export BUILD_CONFIG=common/build.config.gki.aarch64
+          export OUT_DIR="$PWD/out"
+          export DIST_DIR="$PWD/out/dist"
+          export MAKEFLAGS="-j$JOBS"
+          export NINJA_ARGS="-j$JOBS"
+          bash build/build.sh
+
+      - name: Pack AK3
+        run: |
+          git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
+          IMG="$(find kernel/out -type f \( -name 'Image' -o -name 'Image.gz' \) | head -n1)"
+          cp "$IMG" ak3/
+          cd ak3
+          zip -r9 "kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}.zip" .
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ inputs.kernel_version }}-${{ inputs.manager }}
+          path: ak3/*.zip
