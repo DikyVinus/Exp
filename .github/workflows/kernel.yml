@@ -52,18 +52,30 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags
 
-      # 🔥 DroidSpace (ONLY 5.10 remote patch)
-      - name: Apply DroidSpace patch (5.10 only)
+      # 🔥 DroidSpace patch + config (5.10 only)
+      - name: Apply DroidSpace (5.10 only)
         if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
         run: |
           cd kernel/common
 
-          echo "Applying DroidSpace 5.10 patch..."
+          echo "Downloading DroidSpace patch..."
 
-          curl -sSL -o fix_sysvipc.patch \
+          curl -sSL -o droidspace.patch \
             https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
 
-          patch -p1 --forward < fix_sysvipc.patch
+          echo "Applying patch..."
+          patch -p1 --forward < droidspace.patch
+
+          echo "Applying kernel config changes..."
+          printf '%s\n' \
+            "CONFIG_SYSVIPC=y" \
+            "CONFIG_DEVTMPFS=y" \
+            "CONFIG_PID_NS=y" \
+            "CONFIG_POSIX_MQUEUE=y" \
+            "CONFIG_NETFILTER_XT_TARGET_REJECT=y" \
+            "CONFIG_NETFILTER_XT_TARGET_LOG=y" \
+            "CONFIG_NETFILTER_XT_MATCH_RECENT=y" \
+            >> arch/arm64/configs/gki_defconfig
 
       - name: Build kernel
         run: |
