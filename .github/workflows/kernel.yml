@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS + DroidSpace + KernelSU Next)
+name: Build Kernel (GKI LTS + Coreshift + KernelSU Next)
 
 on:
   workflow_dispatch:
@@ -25,9 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # -----------------------------
-      # REPO TOOL
-      # -----------------------------
+      - name: Cache repo
+        uses: actions/cache@v4
+        with:
+          path: kernel/.repo
+          key: repo-${{ inputs.kernel_version }}
+
       - name: Install repo tool
         run: |
           mkdir -p ~/bin
@@ -35,9 +38,6 @@ jobs:
           chmod +x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      # -----------------------------
-      # GKI BRANCH SELECT
-      # -----------------------------
       - name: Set GKI branch
         run: |
           case "${{ inputs.kernel_version }}" in
@@ -46,10 +46,7 @@ jobs:
             6.6)  echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV ;;
           esac
 
-      # -----------------------------
-      # SYNC SOURCE
-      # -----------------------------
-      - name: Sync kernel source
+      - name: Sync GKI source
         run: |
           mkdir -p kernel
           cd kernel
@@ -57,26 +54,26 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync --optimized-fetch --prune
 
-      # -----------------------------
-      # CLEAN
-      # -----------------------------
       - name: Clean kernel tree
         run: |
           cd kernel/common
           make mrproper
           rm -rf ../out
 
-      # -----------------------------
-      # PATCHES (NOT CONFIGS)
-      # -----------------------------
-      - name: Apply DroidSpace patch
-        if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
+      - name: Create Coreshift fragment
+        if: ${{ inputs.droidspace == true }}
         run: |
-          cd kernel/common
-          curl -sSL -o patch.patch \
-            https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
-
-          patch -p1 --forward --reject-file=- < patch.patch
+          cat > Coreshift.fragment << 'EOF'
+          CONFIG_SYSVIPC=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_PID_NS=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_IPC_NS=y
+          CONFIG_UTS_NS=y
+          CONFIG_NET_NS=y
+          CONFIG_USER_NS=y
+          CONFIG_TMPFS_XATTR=y
+          EOF
 
       - name: Apply KernelSU Next
         if: ${{ inputs.kernelsu == true }}
@@ -85,92 +82,31 @@ jobs:
           git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
           bash ksu/kernel/setup.sh
 
-      # -----------------------------
-      # DEFCONFIG (GKI BASE ONLY)
-      # -----------------------------
-      - name: Generate base defconfig
-        run: |
-          cd kernel/common
-
-          export O=../out/android-${{ inputs.kernel_version }}-gki
-          mkdir -p $O
-
-          make O=$O ARCH=arm64 gki_defconfig
-
-      # -----------------------------
-      # DROIDSPACE FRAGMENT (ONLY SOURCE OF CONFIGS)
-      # -----------------------------
-      - name: Create DroidSpace fragment
-        if: ${{ inputs.droidspace == true }}
-        run: |
-          mkdir -p fragments
-
-          cat > fragments/droidspace.fragment << 'EOF'
-          # DroidSpace kernel feature set (GKI overlay)
-
-          CONFIG_SYSVIPC=y
-          CONFIG_DEVTMPFS=y
-
-          CONFIG_PID_NS=y
-          CONFIG_POSIX_MQUEUE=y
-
-          CONFIG_IPC_NS=y
-          CONFIG_UTS_NS=y
-          CONFIG_NET_NS=y
-          CONFIG_USER_NS=y
-
-          CONFIG_TMPFS_XATTR=y
-          EOF
-
-      # -----------------------------
-      # MERGE FRAGMENT (ONLY IF ENABLED)
-      # -----------------------------
-      - name: Apply DroidSpace fragment
-        if: ${{ inputs.droidspace == true }}
-        run: |
-          cd kernel/common
-
-          export O=../out/android-${{ inputs.kernel_version }}-gki
-
-          ./scripts/kconfig/merge_config.sh \
-            -m \
-            -O $O \
-            $O/.config \
-            ../../fragments/droidspace.fragment
-
-          make O=$O ARCH=arm64 olddefconfig
-
-      # -----------------------------
-      # BUILD
-      # -----------------------------
-      - name: Build kernel
+      - name: Build kernel (fragment-driven)
         run: |
           cd kernel
 
-          export MAKEFLAGS="-j$(nproc)"
-          export BUILD_CONFIG=common/build.config.gki.aarch64
-          export LTO=thin
-          export LLVM=1
-          export LLVM_IAS=1
+          if [ -f "build/build.sh" ]; then
+            SKIP_MRPROPER=1 \
+            LTO=thin \
+            LLVM=1 \
+            LLVM_AIS=1 \
+            GKI_DEFCONFIG_FRAGMENT="$GITHUB_WORKSPACE/Coreshift.fragment" \
+            BUILD_CONFIG=common/build.config.gki.aarch64 \
+            build/build.sh
+          else
+            echo "build.sh not found"
+            exit 1
+          fi
 
-          build/build.sh
-
-      # -----------------------------
-      # PACKAGE
-      # -----------------------------
       - name: Package AnyKernel3
         run: |
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
-
           cp $(find kernel -name Image -type f | head -n1) ak3/
-
           cd ak3
-          zip -r kernel-${{ inputs.kernel_version }}.zip .
+          zip -r kernel-${{ inputs.kernel_version }}-${{ github.run_number }}.zip .
 
-      # -----------------------------
-      # ARTIFACT
-      # -----------------------------
       - uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ inputs.kernel_version }}
+          name: kernel-${{ inputs.kernel_version }}-${{ github.run_number }}
           path: ak3/*.zip
