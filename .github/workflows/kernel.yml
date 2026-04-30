@@ -29,11 +29,162 @@ jobs:
       # ----------------------------
       # CHECKOUT
       # ----------------------------
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       # ----------------------------
-      # CACHE (FAST REBUILDS)
+      # CACHE REPO ONLY (SAFE + FAST)
+      # ----------------------------
+      - name: Cache repo
+        uses: actions/cache@v4
+        with:
+          path: kernel/.repo
+          key: repo-${{ inputs.kernel_version }}
+
+      # ----------------------------
+      # INSTALL REPO TOOL
+      # ----------------------------
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod +x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      # ----------------------------
+      # SET BRANCH
+      # ----------------------------
+      - name: Set GKI branch
+        run: |
+          case "${{ inputs.kernel_version }}" in
+            "5.10")
+              echo "BRANCH=common-android12-5.10-lts" >> $GITHUB_ENV
+              ;;
+            "6.1")
+              echo "BRANCH=common-android14-6.1-lts" >> $GITHUB_ENV
+              ;;
+            "6.6")
+              echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV
+              ;;
+          esac
+
+      # ----------------------------
+      # SYNC SOURCE
+      # ----------------------------
+      - name: Sync GKI source
+        run: |
+          mkdir -p kernel
+          cd kernel
+
+          repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH
+
+          repo sync -c -j$(nproc) \
+            --no-clone-bundle --no-tags \
+            --force-sync --optimized-fetch --prune
+
+      # ----------------------------
+      # CLEAN STATE
+      # ----------------------------
+      - name: Clean kernel tree
+        run: |
+          cd kernel/common
+          make mrproper
+          rm -rf ../out
+
+      # =========================================================
+      # FEATURE LAYERS
+      # =========================================================
+
+      # ----------------------------
+      # DROIDSPACE
+      # ----------------------------
+      - name: Apply DroidSpace patch (5.10 only)
+        if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
+        run: |
+          cd kernel/common
+
+          curl -sSL -o droidspace.patch \
+            https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
+
+          patch -p1 --forward --reject-file=- < droidspace.patch || exit 1
+
+      # ----------------------------
+      # KERNELSU NEXT
+      # ----------------------------
+      - name: Apply KernelSU Next
+        if: ${{ inputs.kernelsu == true }}
+        run: |
+          cd kernel/common
+
+          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu-next
+          bash ksu-next/kernel/setup.sh || exit 1
+
+      # ----------------------------
+      # DEFCONFIG
+      # ----------------------------
+      - name: Generate base defconfig
+        run: |
+          cd kernel/common
+
+          export O=../out/android-${{ inputs.kernel_version }}-gki
+          mkdir -p $O
+
+          make O=$O ARCH=arm64 gki_defconfig
+
+      # ----------------------------
+      # CONFIG TUNING
+      # ----------------------------
+      - name: Apply kernel config safely
+        run: |
+          cd kernel/common
+
+          export O=../out/android-${{ inputs.kernel_version }}-gki
+
+          scripts/config --file $O/.config --enable SYSVIPC
+          scripts/config --file $O/.config --enable DEVTMPFS
+          scripts/config --file $O/.config --enable PID_NS
+          scripts/config --file $O/.config --enable POSIX_MQUEUE
+          scripts/config --file $O/.config --enable NETFILTER_XT_TARGET_REJECT
+          scripts/config --file $O/.config --enable NETFILTER_XT_TARGET_LOG
+          scripts/config --file $O/.config --enable NETFILTER_XT_MATCH_RECENT
+
+          make O=$O ARCH=arm64 olddefconfig
+
+          cp $O/.config $O/defconfig.final
+
+      # ----------------------------
+      # BUILD
+      # ----------------------------
+      - name: Build kernel
+        run: |
+          cd kernel
+
+          export MAKEFLAGS="-j$(nproc)"
+          export BUILD_CONFIG=common/build.config.gki.aarch64
+          export LTO=thin
+          export LLVM=1
+          export LLVM_IAS=1
+
+          build/build.sh
+
+      # ----------------------------
+      # PACKAGING
+      # ----------------------------
+      - name: Pack AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
+
+          cp $(find kernel -name Image -type f | head -n1) ak3/
+
+          cd ak3
+          zip -r kernel-${{ inputs.kernel_version }}-${{ github.run_number }}.zip .
+
+      # ----------------------------
+      # UPLOAD
+      # ----------------------------
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ inputs.kernel_version }}-${{ github.run_number }}
+          path: ak3/*.zip
       # ----------------------------
       - name: Cache kernel tree
         uses: actions/cache@v4
