@@ -167,6 +167,8 @@ jobs:
           export LTO=thin
           export LLVM=1
           export LLVM_IAS=1
+          export KCFLAGS="-O2"
+          export KBUILD_CFLAGS="-O2"
 
           build/build.sh
 
