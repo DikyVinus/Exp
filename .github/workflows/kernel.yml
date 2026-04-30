@@ -170,6 +170,9 @@ jobs:
 
           export MAKEFLAGS="-j$(nproc)"
           export BUILD_CONFIG=common/build.config.gki.aarch64
+          export LTO=thin
+          export LLVM=1
+          export LLVM_IAS=1
 
           build/build.sh
 
