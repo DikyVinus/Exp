@@ -81,14 +81,17 @@ jobs:
           mkdir -p $O
           make O=$O ARCH=arm64 gki_defconfig
 
-      - name: Apply kernel config (safe mode)
+      - name: Apply kernel config (tracked mode)
         run: |
           cd kernel/common
 
           export O=../out/android-${{ inputs.kernel_version }}-gki
+          : > $O/applied.configs   # reset tracking file
 
           apply() {
-            scripts/config --file $O/.config --enable "$1" || true
+            local cfg="$1"
+            scripts/config --file $O/.config --enable "$cfg" || true
+            echo "$cfg" >> $O/applied.configs
           }
 
           apply SYSVIPC
@@ -100,15 +103,37 @@ jobs:
           apply NET_NS
           apply USER_NS
 
+          if [ "${{ inputs.kernelsu }}" = "true" ]; then
+            apply CGROUP_PIDS
+          fi
+
+          if [ "${{ inputs.droidspace }}" = "true" ]; then
+            apply TMPFS_XATTR
+          fi
+
           make O=$O ARCH=arm64 olddefconfig || true
 
-      - name: Verify applied config
+      - name: Verify applied config (auto-driven)
         run: |
           cd kernel/common
           export O=../out/android-${{ inputs.kernel_version }}-gki
 
           echo "==== CONFIG CHECK ===="
-          grep -E "SYSVIPC|DEVTMPFS|PID_NS|IPC_NS|NET_NS|USER_NS|CGROUP_PIDS|TMPFS_XATTR" $O/.config || true
+
+          if [ ! -f "$O/applied.configs" ]; then
+            echo "No applied.configs found"
+            exit 1
+          fi
+
+          while read -r cfg; do
+            [ -z "$cfg" ] && continue
+
+            if grep -q "^CONFIG_${cfg}=y" "$O/.config"; then
+              echo "[OK] $cfg"
+            else
+              echo "[WARN] $cfg missing"
+            fi
+          done < "$O/applied.configs"
 
           cp $O/.config $O/defconfig.final
 
