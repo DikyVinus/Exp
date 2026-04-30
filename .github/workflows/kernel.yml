@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS Stable + Fixed Config)
+name: Build Kernel (GKI LTS Stable Fixed)
 
 on:
   workflow_dispatch:
@@ -47,13 +47,26 @@ jobs:
 
       - name: Sync GKI source
         run: |
-          mkdir kernel
+          mkdir -p kernel
           cd kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags
 
       # ----------------------------
-      # DroidSpace patch (5.10 only)
+      # CLEAN FIX (THIS FIXES YOUR ERROR)
+      # ----------------------------
+      - name: Clean kernel tree (IMPORTANT)
+        run: |
+          cd kernel/common
+
+          echo "Running mrproper..."
+          make mrproper
+
+          echo "Cleaning output directory..."
+          rm -rf ../out
+
+      # ----------------------------
+      # DROIDSPACE PATCH (5.10 ONLY)
       # ----------------------------
       - name: Apply DroidSpace patch
         if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
@@ -69,29 +82,17 @@ jobs:
           patch -p1 --forward < droidspace.patch
 
       # ----------------------------
-      # SAFE GKI CONFIG FLOW (FIXED)
+      # CONFIG GENERATION (SAFE FLOW)
       # ----------------------------
-      - name: Fix kernel config (GKI-safe)
+      - name: Generate GKI defconfig
         run: |
           cd kernel/common
 
-          echo "Applying config changes safely..."
+          export O=../out/android-${{ inputs.kernel_version }}-gki
+          mkdir -p $O
 
-          scripts/config --file arch/arm64/configs/gki_defconfig --enable SYSVIPC
-          scripts/config --file arch/arm64/configs/gki_defconfig --enable DEVTMPFS
-          scripts/config --file arch/arm64/configs/gki_defconfig --enable PID_NS
-          scripts/config --file arch/arm64/configs/gki_defconfig --enable POSIX_MQUEUE
-          scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_TARGET_REJECT
-          scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_TARGET_LOG
-          scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_MATCH_RECENT
-
-          echo "Running dependency resolver (CRITICAL)..."
-          make ARCH=arm64 olddefconfig
-
-          echo "Generating clean defconfig..."
-          make ARCH=arm64 savedefconfig
-
-          cp defconfig arch/arm64/configs/gki_defconfig
+          echo "Generating defconfig..."
+          make O=$O ARCH=arm64 gki_defconfig
 
       # ----------------------------
       # BUILD
