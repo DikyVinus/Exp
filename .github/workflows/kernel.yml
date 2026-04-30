@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS + DroidSpace 5.10)
+name: Build Kernel (GKI LTS Stable)
 
 on:
   workflow_dispatch:
@@ -52,8 +52,8 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags
 
-      # 🔥 DroidSpace patch + config (5.10 only)
-      - name: Apply DroidSpace (5.10 only)
+      # 🔥 DroidSpace patch (ONLY 5.10)
+      - name: Apply DroidSpace patch (5.10 only)
         if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
         run: |
           cd kernel/common
@@ -66,16 +66,22 @@ jobs:
           echo "Applying patch..."
           patch -p1 --forward < droidspace.patch
 
-          echo "Applying kernel config changes..."
-          printf '%s\n' \
-            "CONFIG_SYSVIPC=y" \
-            "CONFIG_DEVTMPFS=y" \
-            "CONFIG_PID_NS=y" \
-            "CONFIG_POSIX_MQUEUE=y" \
-            "CONFIG_NETFILTER_XT_TARGET_REJECT=y" \
-            "CONFIG_NETFILTER_XT_TARGET_LOG=y" \
-            "CONFIG_NETFILTER_XT_MATCH_RECENT=y" \
-            >> arch/arm64/configs/gki_defconfig
+      # 🔧 SAFE CONFIG (NO DEFCONFIG EDITS)
+      - name: Apply kernel config safely
+        run: |
+          cd kernel/common
+
+          echo "Enabling kernel configs via scripts/config..."
+
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable SYSVIPC
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable DEVTMPFS
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable PID_NS
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable POSIX_MQUEUE
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_TARGET_REJECT
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_TARGET_LOG
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_MATCH_RECENT
+
+          make savedefconfig
 
       - name: Build kernel
         run: |
