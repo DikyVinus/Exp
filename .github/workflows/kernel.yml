@@ -25,12 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache repo
-        uses: actions/cache@v4
-        with:
-          path: kernel/.repo
-          key: repo-${{ inputs.kernel_version }}
-
+      # -----------------------------
+      # REPO TOOL
+      # -----------------------------
       - name: Install repo tool
         run: |
           mkdir -p ~/bin
@@ -38,6 +35,9 @@ jobs:
           chmod +x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
+      # -----------------------------
+      # GKI BRANCH SELECT
+      # -----------------------------
       - name: Set GKI branch
         run: |
           case "${{ inputs.kernel_version }}" in
@@ -46,7 +46,10 @@ jobs:
             6.6)  echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV ;;
           esac
 
-      - name: Sync GKI source
+      # -----------------------------
+      # SYNC SOURCE
+      # -----------------------------
+      - name: Sync kernel source
         run: |
           mkdir -p kernel
           cd kernel
@@ -54,89 +57,92 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync --optimized-fetch --prune
 
+      # -----------------------------
+      # CLEAN
+      # -----------------------------
       - name: Clean kernel tree
         run: |
           cd kernel/common
           make mrproper
           rm -rf ../out
 
+      # -----------------------------
+      # PATCHES (NOT CONFIGS)
+      # -----------------------------
       - name: Apply DroidSpace patch
         if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
         run: |
           cd kernel/common
-          curl -sSL -o patch.patch https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
-          patch -p1 --forward --reject-file=- < patch.patch || true
+          curl -sSL -o patch.patch \
+            https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
+
+          patch -p1 --forward --reject-file=- < patch.patch
 
       - name: Apply KernelSU Next
         if: ${{ inputs.kernelsu == true }}
         run: |
           cd kernel/common
           git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
-          bash ksu/kernel/setup.sh || true
+          bash ksu/kernel/setup.sh
 
-      - name: Generate defconfig
+      # -----------------------------
+      # DEFCONFIG (GKI BASE ONLY)
+      # -----------------------------
+      - name: Generate base defconfig
         run: |
           cd kernel/common
+
           export O=../out/android-${{ inputs.kernel_version }}-gki
           mkdir -p $O
+
           make O=$O ARCH=arm64 gki_defconfig
 
-      - name: Apply kernel config (tracked mode)
+      # -----------------------------
+      # DROIDSPACE FRAGMENT (ONLY SOURCE OF CONFIGS)
+      # -----------------------------
+      - name: Create DroidSpace fragment
+        if: ${{ inputs.droidspace == true }}
+        run: |
+          mkdir -p fragments
+
+          cat > fragments/droidspace.fragment << 'EOF'
+          # DroidSpace kernel feature set (GKI overlay)
+
+          CONFIG_SYSVIPC=y
+          CONFIG_DEVTMPFS=y
+
+          CONFIG_PID_NS=y
+          CONFIG_POSIX_MQUEUE=y
+
+          CONFIG_IPC_NS=y
+          CONFIG_UTS_NS=y
+          CONFIG_NET_NS=y
+          CONFIG_USER_NS=y
+
+          CONFIG_TMPFS_XATTR=y
+          EOF
+
+      # -----------------------------
+      # MERGE FRAGMENT (ONLY IF ENABLED)
+      # -----------------------------
+      - name: Apply DroidSpace fragment
+        if: ${{ inputs.droidspace == true }}
         run: |
           cd kernel/common
 
           export O=../out/android-${{ inputs.kernel_version }}-gki
-          : > $O/applied.configs   # reset tracking file
 
-          apply() {
-            local cfg="$1"
-            scripts/config --file $O/.config --enable "$cfg" || true
-            echo "$cfg" >> $O/applied.configs
-          }
+          ./scripts/kconfig/merge_config.sh \
+            -m \
+            -O $O \
+            $O/.config \
+            ../../fragments/droidspace.fragment
 
-          apply SYSVIPC
-          apply DEVTMPFS
-          apply PID_NS
-          apply POSIX_MQUEUE
-          apply IPC_NS
-          apply UTS_NS
-          apply NET_NS
-          apply USER_NS
+          make O=$O ARCH=arm64 olddefconfig
 
-          if [ "${{ inputs.kernelsu }}" = "true" ]; then
-            apply CGROUP_PIDS
-          fi
-
-          if [ "${{ inputs.droidspace }}" = "true" ]; then
-            apply TMPFS_XATTR
-          fi
-
-          make O=$O ARCH=arm64 olddefconfig || true
-
-      - name: Verify applied config (auto-driven)
-        run: |
-          cd kernel/common
-          export O=../out/android-${{ inputs.kernel_version }}-gki
-
-          echo "==== CONFIG CHECK ===="
-
-          if [ ! -f "$O/applied.configs" ]; then
-            echo "No applied.configs found"
-            exit 1
-          fi
-
-          while read -r cfg; do
-            [ -z "$cfg" ] && continue
-
-            if grep -q "^CONFIG_${cfg}=y" "$O/.config"; then
-              echo "[OK] $cfg"
-            else
-              echo "[WARN] $cfg missing"
-            fi
-          done < "$O/applied.configs"
-
-          cp $O/.config $O/defconfig.final
-
+      # -----------------------------
+      # BUILD
+      # -----------------------------
       - name: Build kernel
         run: |
           cd kernel
@@ -146,11 +152,12 @@ jobs:
           export LTO=thin
           export LLVM=1
           export LLVM_IAS=1
-          export KCFLAGS="-O2"
-          export KBUILD_CFLAGS="-O2"
 
           build/build.sh
 
+      # -----------------------------
+      # PACKAGE
+      # -----------------------------
       - name: Package AnyKernel3
         run: |
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
@@ -158,9 +165,12 @@ jobs:
           cp $(find kernel -name Image -type f | head -n1) ak3/
 
           cd ak3
-          zip -r kernel-${{ inputs.kernel_version }}-${{ github.run_number }}.zip .
+          zip -r kernel-${{ inputs.kernel_version }}.zip .
 
+      # -----------------------------
+      # ARTIFACT
+      # -----------------------------
       - uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ inputs.kernel_version }}-${{ github.run_number }}
+          name: kernel-${{ inputs.kernel_version }}
           path: ak3/*.zip
