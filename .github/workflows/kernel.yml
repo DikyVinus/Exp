@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS Clean)
+name: Build Kernel (GKI LTS + Remote DroidSpace)
 
 on:
   workflow_dispatch:
@@ -31,20 +31,17 @@ jobs:
           chmod +x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: Set branch + Android version
+      - name: Set GKI branch
         run: |
           case "${{ inputs.kernel_version }}" in
             "5.10")
               echo "BRANCH=common-android12-5.10-lts" >> $GITHUB_ENV
-              echo "ANDROID_VER=android12" >> $GITHUB_ENV
               ;;
             "6.1")
               echo "BRANCH=common-android14-6.1-lts" >> $GITHUB_ENV
-              echo "ANDROID_VER=android14" >> $GITHUB_ENV
               ;;
             "6.6")
               echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV
-              echo "ANDROID_VER=android15" >> $GITHUB_ENV
               ;;
           esac
 
@@ -55,17 +52,29 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags
 
+      # 🔥 Fetch DroidSpace patches from remote repo
+      - name: Download DroidSpace patches
+        if: ${{ inputs.droidspace == true }}
+        run: |
+          mkdir -p droidspace-patches
+
+          git clone --depth=1 \
+            https://github.com/ravindu644/Droidspaces-OSS.git temp-ds
+
+          cp -r temp-ds/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/* \
+            droidspace-patches/
+
       - name: Apply DroidSpace patches
         if: ${{ inputs.droidspace == true }}
         run: |
           cd kernel/common
 
-          PATCH_DIR="$GITHUB_WORKSPACE/patches/common/droidspaces"
-          KERNEL_VER="${{ inputs.kernel_version }}"
-
           echo "Applying DroidSpace patches..."
 
-          if [ "$ANDROID_VER" = "android12" ] && [ "$KERNEL_VER" = "5.10" ]; then
+          PATCH_DIR="$GITHUB_WORKSPACE/droidspace-patches"
+
+          # Kernel 5.10 special handling
+          if [ "${{ inputs.kernel_version }}" = "5.10" ]; then
             patch -p1 --forward < "$PATCH_DIR/fix_sysvipc_kabi_bypass_a16-6.12_below.patch"
             patch -p1 --forward < "$PATCH_DIR/fix_abi_padding_for_posix_mqueue.patch"
           else
