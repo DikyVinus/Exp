@@ -90,7 +90,7 @@ jobs:
             SKIP_MRPROPER=1 \
             LTO=thin \
             LLVM=1 \
-            LLVM_AIS=1 \
+            LLVM_IAS=1 \
             GKI_DEFCONFIG_FRAGMENT="$GITHUB_WORKSPACE/Coreshift.fragment" \
             BUILD_CONFIG=common/build.config.gki.aarch64 \
             build/build.sh
