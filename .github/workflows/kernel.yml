@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS Stable)
+name: Build Kernel (GKI LTS Stable + Fixed Config)
 
 on:
   workflow_dispatch:
@@ -52,8 +52,10 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags
 
-      # 🔥 DroidSpace patch (ONLY 5.10)
-      - name: Apply DroidSpace patch (5.10 only)
+      # ----------------------------
+      # DroidSpace patch (5.10 only)
+      # ----------------------------
+      - name: Apply DroidSpace patch
         if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
         run: |
           cd kernel/common
@@ -66,12 +68,14 @@ jobs:
           echo "Applying patch..."
           patch -p1 --forward < droidspace.patch
 
-      # 🔧 SAFE CONFIG (NO DEFCONFIG EDITS)
-      - name: Apply kernel config safely
+      # ----------------------------
+      # SAFE GKI CONFIG FLOW (FIXED)
+      # ----------------------------
+      - name: Fix kernel config (GKI-safe)
         run: |
           cd kernel/common
 
-          echo "Enabling kernel configs via scripts/config..."
+          echo "Applying config changes safely..."
 
           scripts/config --file arch/arm64/configs/gki_defconfig --enable SYSVIPC
           scripts/config --file arch/arm64/configs/gki_defconfig --enable DEVTMPFS
@@ -81,14 +85,26 @@ jobs:
           scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_TARGET_LOG
           scripts/config --file arch/arm64/configs/gki_defconfig --enable NETFILTER_XT_MATCH_RECENT
 
-          make savedefconfig
+          echo "Running dependency resolver (CRITICAL)..."
+          make ARCH=arm64 olddefconfig
 
+          echo "Generating clean defconfig..."
+          make ARCH=arm64 savedefconfig
+
+          cp defconfig arch/arm64/configs/gki_defconfig
+
+      # ----------------------------
+      # BUILD
+      # ----------------------------
       - name: Build kernel
         run: |
           cd kernel
           export BUILD_CONFIG=common/build.config.gki.aarch64
           build/build.sh
 
+      # ----------------------------
+      # PACK
+      # ----------------------------
       - name: Pack AnyKernel3
         run: |
           git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
@@ -96,6 +112,9 @@ jobs:
           cd ak3
           zip -r kernel.zip .
 
+      # ----------------------------
+      # UPLOAD
+      # ----------------------------
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
