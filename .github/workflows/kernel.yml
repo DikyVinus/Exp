@@ -99,15 +99,6 @@ jobs:
           apply UTS_NS
           apply NET_NS
           apply USER_NS
-          apply CGROUP_PIDS
-          apply TMPFS_XATTR
-
-          apply NETFILTER_XT_TARGET_REJECT
-          apply NETFILTER_XT_TARGET_LOG
-          apply NETFILTER_XT_MATCH_RECENT
-          apply TCP_CONG_BBR
-          apply NET_SCH_FQ
-          apply NET_SCH_FQ_CODEL
 
           make O=$O ARCH=arm64 olddefconfig || true
 
