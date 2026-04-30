@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS + Remote DroidSpace)
+name: Build Kernel (GKI LTS + DroidSpace 5.10)
 
 on:
   workflow_dispatch:
@@ -52,46 +52,18 @@ jobs:
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags
 
-      # 🔥 Fetch DroidSpace patches from remote repo
-      - name: Download DroidSpace patches
-        if: ${{ inputs.droidspace == true }}
-        run: |
-          mkdir -p droidspace-patches
-
-          git clone --depth=1 \
-            https://github.com/ravindu644/Droidspaces-OSS.git temp-ds
-
-          cp -r temp-ds/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/* \
-            droidspace-patches/
-
-      - name: Apply DroidSpace patches
-        if: ${{ inputs.droidspace == true }}
+      # 🔥 DroidSpace (ONLY 5.10 remote patch)
+      - name: Apply DroidSpace patch (5.10 only)
+        if: ${{ inputs.droidspace == true && inputs.kernel_version == '5.10' }}
         run: |
           cd kernel/common
 
-          echo "Applying DroidSpace patches..."
+          echo "Applying DroidSpace 5.10 patch..."
 
-          PATCH_DIR="$GITHUB_WORKSPACE/droidspace-patches"
+          curl -sSL -o fix_sysvipc.patch \
+            https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch
 
-          # Kernel 5.10 special handling
-          if [ "${{ inputs.kernel_version }}" = "5.10" ]; then
-            patch -p1 --forward < "$PATCH_DIR/fix_sysvipc_kabi_bypass_a16-6.12_below.patch"
-            patch -p1 --forward < "$PATCH_DIR/fix_abi_padding_for_posix_mqueue.patch"
-          else
-            patch -p1 --forward < "$PATCH_DIR/fix_sysvipc_kabi_6_7_8.patch"
-          fi
-
-          patch -p1 --forward < "$PATCH_DIR/0001-Return-ghost-task-if-task-is-null-and-is-requested-b.patch"
-
-          printf '%s\n' \
-            "CONFIG_SYSVIPC=y" \
-            "CONFIG_DEVTMPFS=y" \
-            "CONFIG_PID_NS=y" \
-            "CONFIG_POSIX_MQUEUE=y" \
-            "CONFIG_NETFILTER_XT_TARGET_REJECT=y" \
-            "CONFIG_NETFILTER_XT_TARGET_LOG=y" \
-            "CONFIG_NETFILTER_XT_MATCH_RECENT=y" \
-            >> arch/arm64/configs/gki_defconfig
+          patch -p1 --forward < fix_sysvipc.patch
 
       - name: Build kernel
         run: |
