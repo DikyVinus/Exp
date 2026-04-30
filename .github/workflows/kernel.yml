@@ -31,7 +31,7 @@ jobs:
           chmod +x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: Set LTS branch + Android version
+      - name: Set branch + Android version
         run: |
           case "${{ inputs.kernel_version }}" in
             "5.10")
@@ -48,13 +48,13 @@ jobs:
               ;;
           esac
 
-      - name: Sync GKI (LTS)
+      - name: Sync GKI
         run: |
-          mkdir kernel && cd kernel
+          mkdir kernel
+          cd kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags
 
-      # 🔧 Your custom patches (optional, if you have any)
       - name: Apply custom patches
         run: |
           if [ -d "$GITHUB_WORKSPACE/patches/custom" ]; then
@@ -62,7 +62,6 @@ jobs:
             git apply $GITHUB_WORKSPACE/patches/custom/*.patch || true
           fi
 
-      # 🔥 DroidSpace (optional)
       - name: Apply DroidSpace patches
         if: ${{ inputs.droidspace == true }}
         run: |
@@ -71,7 +70,7 @@ jobs:
           PATCH_DIR="$GITHUB_WORKSPACE/patches/common/droidspaces"
           KERNEL_VER="${{ inputs.kernel_version }}"
 
-          echo "== DroidSpace patches =="
+          echo "Applying DroidSpace patches"
 
           if [ "$ANDROID_VER" = "android12" ] && [ "$KERNEL_VER" = "5.10" ]; then
             patch -p1 --forward < "$PATCH_DIR/fix_sysvipc_kabi_bypass_a16-6.12_below.patch"
@@ -82,7 +81,7 @@ jobs:
 
           patch -p1 --forward < "$PATCH_DIR/0001-Return-ghost-task-if-task-is-null-and-is-requested-b.patch"
 
-          cat >> arch/arm64/configs/gki_defconfig <<EOF
+          cat >> arch/arm64/configs/gki_defconfig <<'EOF'
 CONFIG_SYSVIPC=y
 CONFIG_DEVTMPFS=y
 CONFIG_PID_NS=y
@@ -105,7 +104,7 @@ EOF
           cd ak3
           zip -r kernel.zip .
 
-      - name: Upload
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: kernel
