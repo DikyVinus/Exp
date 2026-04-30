@@ -146,6 +146,7 @@ jobs:
           scripts/config --file $O/.config --enable NETFILTER_XT_TARGET_REJECT
           scripts/config --file $O/.config --enable NETFILTER_XT_TARGET_LOG
           scripts/config --file $O/.config --enable NETFILTER_XT_MATCH_RECENT
+          scripts/config --file $O/.config --enable IPC_NS
 
           make O=$O ARCH=arm64 olddefconfig
 
