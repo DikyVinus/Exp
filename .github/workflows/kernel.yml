@@ -151,6 +151,7 @@ jobs:
           scripts/config --file $O/.config --enable NET_NS
           scripts/config --file $O/.config --enable USER_NS
           scripts/config --file $O/.config --enable CGROUP_PIDS
+          scripts/config --file $O/.config --enable TMPFS_XATTR
 
           make O=$O ARCH=arm64 olddefconfig
 
