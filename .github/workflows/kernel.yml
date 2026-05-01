@@ -70,16 +70,19 @@ jobs:
       - name: Apply DroidSpaces patches
         if: ${{ inputs.droidspace == true }}
         run: |
+          # Ensure we're in the kernel/common directory
           cd kernel/common
-          FILE="ipc/msg.c"
 
-          if grep -q "msg_init_ns(struct ipc_namespace" "$FILE"; then
+          # Fix redefinition of msg_init_ns by commenting out the function in msg.c
+          if grep -q "void msg_init_ns(struct ipc_namespace *ns)" "ipc/msg.c"; then
             sed -i '/void msg_init_ns(struct ipc_namespace *ns)/,/^}/c\
-            /* removed duplicate msg_init_ns */' "$FILE"
+/* Commented out duplicate msg_init_ns */' "ipc/msg.c"
           fi
 
+          # Apply any additional patches for DroidSpaces
           curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch | patch -p1 || true
 
+          # Create the Coreshift config fragment
           cat > $GITHUB_WORKSPACE/Coreshift.fragment << 'EOF'
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
