@@ -1,31 +1,24 @@
-From 769a5cfdc17b98d8e0bd491d45f5651180e42196 Mon Sep 17 00:00:00 2001
-From: Your Name <github@action.com>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH] Fix msg_init_ns redefinition in ipc/msg.c and ipc/util.h
+From a0aa446ca326b5d26ac1dec057efd8c07d2bcbff Mon Sep 17 00:00:00 2001
+From: Random Developer <random-dev@example.com>
+Date: Tue, 1 May 2026 09:00:00 +0000
+Subject: [PATCH] Comment out inline definition of msg_init_ns in ipc/util.h to avoid redefinition conflict
+
+This patch comments out the inline definition of msg_init_ns in ipc/util.h to resolve the redefinition conflict with the full function definition in ipc/msg.c.
 
 ---
- ipc/msg.c | 1 +
- ipc/util.h | 2 ++
- 2 files changed, 3 insertions(+)
+ ipc/util.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/ipc/msg.c b/ipc/msg.c
-index 59db96c..f09f6ac 100644
---- a/ipc/msg.c
-+++ b/ipc/msg.c
-@@ -1299,6 +1299,7 @@ void msg_init_ns(struct ipc_namespace *ns)
-    // Your function code here
- }
- 
-+/* Commented out the definition to avoid redefinition error */
- 
 diff --git a/ipc/util.h b/ipc/util.h
-index 3e48f64..118fcd7 100644
+index 1234567..89abcdef 100644
 --- a/ipc/util.h
 +++ b/ipc/util.h
-@@ -74,6 +74,8 @@ static inline void msg_init_ns(struct ipc_namespace *ns) { }
-+/* Commented out the inline definition to avoid redefinition */
+@@ -74,7 +74,7 @@
+  * Function declarations and other definitions
+  */
  
-+/* static inline void msg_init_ns(struct ipc_namespace *ns) { } */
+- static inline void msg_init_ns(struct ipc_namespace *ns) { }
++ // static inline void msg_init_ns(struct ipc_namespace *ns) { }
  
 -- 
-2.25.1
+2.34.1
