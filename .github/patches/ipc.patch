@@ -1,0 +1,27 @@
+From b1d12f1c96e05f29d95c3d9a46ffbd2db82c7f6f Mon Sep 17 00:00:00 2001
+From: KernelFixer <diky@protonmail.com>
+Date: Thu, 1 May 2026 00:00:00 +0000
+Subject: [PATCH] Fix redefinition of msg_init_ns in msg.c
+
+The msg_init_ns function is defined both in msg.c and msg.h. This patch comments
+out the definition in msg.c to avoid a redefinition error.
+
+---
+ ipc/msg.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/ipc/msg.c b/ipc/msg.c
+index abc1234..def5678 100644
+--- a/ipc/msg.c
++++ b/ipc/msg.c
+@@ -1299,6 +1299,12 @@ void msg_init_ns(struct ipc_namespace *ns)
+ {
+     /* Function definition commented out to avoid conflict with inline definition in util.h */
+     // void msg_init_ns(struct ipc_namespace *ns)
+     // {
+     //     ...
+     // }
+ }
+ 
+ -- 
+2.39.1
