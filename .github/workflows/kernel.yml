@@ -76,7 +76,7 @@ jobs:
           # Fix redefinition of msg_init_ns by commenting out the function in msg.c
           if grep -q "void msg_init_ns(struct ipc_namespace *ns)" "ipc/msg.c"; then
             sed -i '/void msg_init_ns(struct ipc_namespace *ns)/,/^}/c\
-/* Commented out duplicate msg_init_ns */' "ipc/msg.c"
+          /* Commented out duplicate msg_init_ns */' "ipc/msg.c"
           fi
 
           # Apply any additional patches for DroidSpaces
