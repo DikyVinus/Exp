@@ -74,7 +74,7 @@ jobs:
 
           if grep -q "msg_init_ns(struct ipc_namespace" "$FILE"; then
             sed -i '/void msg_init_ns(struct ipc_namespace *ns)/,/^}/c\
-/* removed duplicate msg_init_ns */' "$FILE"
+            /* removed duplicate msg_init_ns */' "$FILE"
           fi
 
           curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch | patch -p1 || true
