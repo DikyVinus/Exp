@@ -10,8 +10,8 @@ on:
       manager:
         type: choice
         required: true
-        options: ["None", "KernelSU-Next", "KernelSU", "KowSU", "ResukiSU", "Rissu", "Wild_KSU"]
-        default: "None"
+        options: ["Vanilla", "KernelSU-Next", "KernelSU", "KowSU", "ResukiSU", "Rissu", "Wild_KSU"]
+        default: "Vanilla"
       lto:
         type: choice
         required: true
@@ -54,7 +54,7 @@ jobs:
           repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle --optimized-fetch --current-branch
 
       - name: Init Manager
-        if: ${{ inputs.manager != 'None' }}
+        if: ${{ inputs.manager != 'Vanilla' }}
         run: |
           git submodule update --init --depth 1 --single-branch manager/${{ inputs.manager }}
           MANAGER_PATH="${{ github.workspace }}/manager/${{ inputs.manager }}"
