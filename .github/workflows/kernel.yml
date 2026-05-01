@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Set Variables
         run: |
@@ -36,31 +38,6 @@ jobs:
             6.1)  echo "BRANCH=common-android14-6.1-lts" >> $GITHUB_ENV ;;
             6.6)  echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV ;;
           esac
-
-      - name: Install Dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y ccache bc build-essential libelf-dev libssl-dev
-
-      - name: Free Disk Space
-        uses: endersonmenezes/free-disk-space@v3
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: true
-          remove_swap: true
-          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
-          remove_packages_one_command: true
-          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
-
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: ccache-${{ inputs.kernel_version }}-${{ github.ref_name }}
-          restore-keys: |
-            ccache-${{ inputs.kernel_version }}-
 
       - name: Install repo
         run: |
@@ -86,55 +63,32 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-
-          # Create fragment in a stable location
           cat << 'EOF' > perf_fragment
           CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
           CONFIG_CFI_CLANG=n
           CONFIG_KASAN=n
           EOF
-
-          # Toolchain & Ccache Config
-          export USE_CCACHE=1
-          export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          export CCACHE_MAXSIZE=12G
-          export CCACHE_BASEDIR="${{ github.workspace }}"
-          export CCACHE_NOHASHDIR=true
-          export CCACHE_COMPRESS=true
-          export CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,system_headers
-          export PATH="/usr/lib/ccache:$PATH"
-          export CC="ccache clang"
-          export CXX="ccache clang++"
-          
-          # Build Env Vars
           export LTO=${{ inputs.lto }}
           export SKIP_MRPROPER=1
           export SKIP_CP_KERNEL_HDRS=1
           export SKIP_UNSTRIPPED_MODULES=1
           export SKIP_DEBUG_INFO=1
           export BUILD_CONFIG=common/build.config.gki.aarch64
-          
-          # Use ABSOLUTE path to prevent "No such file" errors
           export GKI_DEFCONFIG_FRAGMENT="$(pwd)/perf_fragment"
-          
-          # Resource Logic
           JOBS=$(nproc)
           [ "${{ inputs.lto }}" = "full" ] && JOBS=1
-          
-          ccache -z
           bash build/build.sh -j${JOBS}
 
-      - name: Check ccache Stats
-        run: |
-          export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          ccache -s
-
-      - name: Prepare Artifact
+      - name: Package with AnyKernel3
         run: |
           UPSTREAM=$(head -n 4 kernel/common/Makefile | awk '{print $3}' | paste -sd '.' -)
           echo "UPSTREAM_VER=$UPSTREAM" >> $GITHUB_ENV
           FINAL_NAME="v${UPSTREAM}-${{ inputs.manager }}-${{ env.DATE }}"
           echo "FINAL_NAME=$FINAL_NAME" >> $GITHUB_ENV
+          cp kernel/out/*/dist/Image .github/patches/anykernel3/Image
+          cd .github/patches/anykernel3
+          zip -r9 "../../../${FINAL_NAME}.zip" * -x .git README.md
+          cd ../../../
           mkdir -p out/
           cp kernel/out/*/dist/Image "out/Image-$FINAL_NAME"
 
@@ -143,7 +97,9 @@ jobs:
         with:
           tag_name: ${{ env.FINAL_NAME }}
           name: ${{ env.FINAL_NAME }}
-          files: out/Image-*
+          files: |
+            *.zip
+            out/Image-*
           body: |
             - **Kernel Version:** `${{ env.UPSTREAM_VER }}`
             - **Manager:** `${{ inputs.manager }}`
