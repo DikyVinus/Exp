@@ -1,0 +1,57 @@
+name: Generate Kernel Patches
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Kernel version (e.g., 5.10)'
+        required: true
+        default: '5.10'
+      upstream_tag:
+        description: 'The LTS tag to compare against (e.g., v5.10.252)'
+        required: true
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0 # Important: Fetch all history to find the upstream tag
+
+      - name: Generate Patches
+        run: |
+          # Navigate to your submodule path
+          SUBMODULE_PATH="repo/src/${{ inputs.version }}"
+          
+          if [ ! -d "$SUBMODULE_PATH" ]; then
+            echo "Error: Submodule directory $SUBMODULE_PATH not found!"
+            exit 1
+          fi
+          
+          cd "$SUBMODULE_PATH"
+          
+          # Add the official Linux LTS as a remote to ensure we have the upstream tag
+          git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+          git fetch upstream tag ${{ inputs.upstream_tag }} --no-tags
+          
+          # Create output directory in workspace root
+          mkdir -p ../../../../patches
+          
+          # Generate formatted patches from the upstream tag to your current HEAD
+          git format-patch ${{ inputs.upstream_tag }}..HEAD -o ../../../../patches/
+          
+          # Check if any patches were created
+          if [ -z "$(ls -A ../../../../patches/)" ]; then
+            echo "No changes found between ${{ inputs.upstream_tag }} and HEAD."
+            exit 1
+          fi
+
+      - name: Upload Patches
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-patches-${{ inputs.version }}
+          path: patches/*.patch
