@@ -60,6 +60,13 @@ jobs:
           make mrproper
           rm -rf ../out
 
+      - name: Apply KernelSU Next
+        if: ${{ inputs.kernelsu == true }}
+        run: |
+          cd kernel/common
+          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
+          bash ksu/kernel/setup.sh
+
       - name: Apply GKI patch for SYSVIPC (below 6.12) if DroidSpaces enabled
         if: ${{ inputs.droidspace == true }}
         run: |
@@ -83,13 +90,6 @@ jobs:
           # HW Access Support
           CONFIG_DEVTMPFS=y
           EOF
-
-      - name: Apply KernelSU Next
-        if: ${{ inputs.kernelsu == true }}
-        run: |
-          cd kernel/common
-          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
-          bash ksu/kernel/setup.sh
 
       - name: Build kernel (fragment-driven)
         run: |
