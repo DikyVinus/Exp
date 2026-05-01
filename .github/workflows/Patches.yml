@@ -1,30 +1,68 @@
-steps:
-      - name: Checkout Root (No Submodules)
+name: Generate Kernel Patches
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Kernel version folder (e.g., 5.10)'
+        required: true
+        type: string
+        default: '5.10'
+      base_branch:
+        description: 'GKI branch to compare against'
+        required: true
+        type: string
+        default: 'common-android12-5.10-lts'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Root
         uses: actions/checkout@v4
         with:
-          # We don't pull submodules here to save time and space
-          submodules: false
+          submodules: false # Do not pull everything yet
           fetch-depth: 0 
 
-      - name: Initialize Specific Submodule
+      - name: Initialize Target Submodule
         run: |
-          # Only initialize the specific folder passed in the inputs
           SUBMODULE_PATH="repo/src/${{ inputs.version }}"
+          echo "Targeting: $SUBMODULE_PATH"
+          
+          # Initialize ONLY the requested submodule folder
           git submodule update --init --depth 1 "$SUBMODULE_PATH"
+          
+          cd "$SUBMODULE_PATH"
+          # Convert shallow clone to full so we can extract commit history
+          git fetch --unshallow || echo "Already full or fetch failed"
 
       - name: Generate Patches
         run: |
           SUBMODULE_PATH="repo/src/${{ inputs.version }}"
           cd "$SUBMODULE_PATH"
-          
-          # Force fetch the history of the submodule so we can compare commits
-          # (Initial shallow clone doesn't have the history needed for format-patch)
-          git fetch --unshallow || true
-          
+
+          # 1. Add Android Common as the reference remote
           git remote add android https://android.googlesource.com/kernel/common.git
           git fetch android ${{ inputs.base_branch }} --quiet
-          
-          PATCH_DIR="${{ github.workspace }}/extracted_patches"
+
+          # 2. Setup patch directory in the workspace root
+          PATCH_DIR="${{ github.workspace }}/patches_out"
           mkdir -p "$PATCH_DIR"
-          
+
+          # 3. Extract commits that exist in your repo but NOT in official Android GKI
+          # 'format-patch' keeps author info and creates a numbered sequence
           git format-patch android/${{ inputs.base_branch }}..HEAD -o "$PATCH_DIR"
+
+          # 4. Verification
+          if [ -z "$(ls -A $PATCH_DIR)" ]; then
+            echo "::error::No custom commits found! Your submodule matches the base branch exactly."
+            exit 1
+          fi
+          echo "Generated $(ls -1 $PATCH_DIR | wc -l) patches."
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: patches-${{ inputs.version }}-${{ github.run_id }}
+          path: patches_out/*.patch
