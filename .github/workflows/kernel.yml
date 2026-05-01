@@ -37,19 +37,14 @@ jobs:
             6.6)  echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV ;;
           esac
 
-      - name: Cache Repo
-        uses: actions/cache@v4
-        with:
-          path: kernel/.repo
-          key: repo-${{ inputs.kernel_version }}-${{ env.BRANCH }}
-
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ inputs.kernel_version }}-${{ env.BRANCH }}-${{ github.run_id }}
+          # Keyed by kernel version so different versions don't pollute each other's objects
+          key: ccache-${{ inputs.kernel_version }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ inputs.kernel_version }}-${{ env.BRANCH }}-
+            ccache-${{ inputs.kernel_version }}-
 
       - name: Install repo
         run: |
@@ -61,6 +56,7 @@ jobs:
       - name: Sync Source
         run: |
           mkdir kernel && cd kernel
+          # Optimized shallow sync: fast and lightweight
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1 --quiet
           repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle --optimized-fetch
 
@@ -79,16 +75,17 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          # Job scaling for Full LTO (Memory intensive)
+          # Throttling jobs for Full LTO to prevent OOM (Out of Memory) errors
           JOBS=$(nproc)
           [ "${{ inputs.lto }}" = "full" ] && JOBS=2
           
-          # Setup ccache
+          # Ccache Tuning
           export USE_CCACHE=1
           export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          export CCACHE_MAXSIZE=5G
+          export CCACHE_MAXSIZE=9G
+          export CCACHE_COMPRESS=1
           
-          # Optimization Flags
+          # Kernel Build Flags
           export LTO=${{ inputs.lto }}
           export SKIP_MRPROPER=1
           export SKIP_CP_KERNEL_HDRS=1
@@ -99,15 +96,17 @@ jobs:
 
       - name: Prepare Artifact
         run: |
-          # The 'tr' command strips hidden newlines that break GITHUB_ENV
+          # The 'tr' command is vital here to strip hidden characters from 'make'
           UPSTREAM=$(make -C kernel/common kernelversion | tr -d '\r\n')
           
-          # Construct name with sanitization
+          # We store the clean version in GITHUB_ENV for use in the Release step
+          echo "UPSTREAM_VER=$UPSTREAM" >> $GITHUB_ENV
+          
           FINAL_NAME="v${UPSTREAM}-${{ inputs.manager }}-${{ env.DATE }}"
           echo "FINAL_NAME=$FINAL_NAME" >> $GITHUB_ENV
           
           mkdir -p out/
-          # Using quotes to handle any potential spaces or special characters
+          # Using quotes to ensure the path is treated as a single string
           cp kernel/out/*/dist/Image "out/Image-$FINAL_NAME"
 
       - name: Create Release
@@ -117,8 +116,8 @@ jobs:
           name: ${{ env.FINAL_NAME }}
           files: out/Image-*
           body: |
-            ### GKI Kernel Build
-            - **Upstream:** `v${{ env.UPSTREAM }}`
+            ### GKI Kernel Build Complete
+            - **Kernel Version:** `${{ env.UPSTREAM_VER }}`
             - **Manager:** `${{ inputs.manager }}`
-            - **LTO:** `${{ inputs.lto }}`
+            - **LTO Type:** `${{ inputs.lto }}`
             - **Build Date:** `${{ env.DATE }}`
