@@ -37,6 +37,11 @@ jobs:
             6.6)  echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV ;;
           esac
 
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y ccache bc build-essential libelf-dev libssl-dev
+          
       - name: Aggressive Free Disk Space
         uses: endersonmenezes/free-disk-space@v3
         with:
@@ -48,14 +53,13 @@ jobs:
           remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
           remove_packages_one_command: true
           remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
-          rm_cmd: "rmz"
-          rmz_version: "3.1.1"
 
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ inputs.kernel_version }}-${{ github.sha }}
+          # Use a key that doesn't include SHA if you want to reuse the same cache across pushes
+          key: ccache-${{ inputs.kernel_version }}-${{ github.ref_name }}
           restore-keys: |
             ccache-${{ inputs.kernel_version }}-
 
@@ -85,7 +89,6 @@ jobs:
           cd kernel
           
           # 1. Create Performance Fragment
-          # We use a fragment to override default settings safely
           cat <<EOF > common/arch/arm64/configs/perf_fragment
           CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
           # CONFIG_CC_OPTIMIZE_FOR_SIZE is not set
@@ -93,18 +96,20 @@ jobs:
           CONFIG_KASAN=n
           EOF
 
-          # 2. Inject Fragment into GKI Build
-          # merge_config.sh ensures our changes take precedence over gki_defconfig
+          # 2. Inject Fragment
           export POST_DEFCONFIG_CMDS="scripts/kconfig/merge_config.sh -m -O common/arch/arm64/configs/ common/arch/arm64/configs/gki_defconfig common/arch/arm64/configs/perf_fragment"
 
-          # 3. Setup Environment
+          # 3. Optimized Ccache Environment
           export USE_CCACHE=1
           export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          export CCACHE_MAXSIZE=9G
-          export CCACHE_COMPRESS=1
-          export CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime
+          export CCACHE_MAXSIZE=6G
+          export CCACHE_COMPRESS=true
+          export CCACHE_COMPRESSLEVEL=3
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,system_headers
           
-          ccache -z # Reset stats to monitor this specific run
+          ccache -z # Clear previous run stats
           
           export LTO=${{ inputs.lto }}
           export SKIP_MRPROPER=1
