@@ -72,15 +72,23 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          export BUILD_CONFIG=common/build.config.gki.aarch64
-          export LTO=${{ inputs.lto }}
-          export SKIP_MRPROPER=1
-          export SKIP_CP_KERNEL_HDRS=1
-          export SKIP_UNSTRIPPED_MODULES=1
-          export SKIP_DEBUG_INFO=1
           JOBS=$(nproc)
           [ "${{ inputs.lto }}" = "full" ] && JOBS=1
-          bash build/build.sh -j${JOBS}
+
+          if [ "${{ inputs.kernel_version }}" == "6.6" ]; then
+            tools/bazel run //common:kernel_aarch64_dist \
+              --lto=${{ inputs.lto }} \
+              --jobs=${JOBS} \
+              --dist_dir=out/android-common/dist
+          else
+            export BUILD_CONFIG=common/build.config.gki.aarch64
+            export LTO=${{ inputs.lto }}
+            export SKIP_MRPROPER=1
+            export SKIP_CP_KERNEL_HDRS=1
+            export SKIP_UNSTRIPPED_MODULES=1
+            export SKIP_DEBUG_INFO=1
+            bash build/build.sh -j${JOBS}
+          fi
 
       - name: Package
         run: |
@@ -88,14 +96,18 @@ jobs:
           echo "UPSTREAM_VER=$UPSTREAM" >> $GITHUB_ENV
           FINAL_NAME="v${UPSTREAM}-${{ inputs.manager }}-${{ env.DATE }}"
           echo "FINAL_NAME=$FINAL_NAME" >> $GITHUB_ENV
+          
           mkdir ak3_work
           cp -r .github/patches/anykernel3/* ak3_work/
-          cp kernel/out/*/dist/Image ak3_work/
+          
+          find kernel/out -name Image -exec cp {} ak3_work/ \;
+          
           cd ak3_work
           zip -r9 "../$FINAL_NAME.zip" *
           cd ..
+          
           mkdir -p out/
-          cp kernel/out/*/dist/Image out/Image-$FINAL_NAME
+          cp ak3_work/Image out/Image-$FINAL_NAME
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -110,3 +122,4 @@ jobs:
             - Manager: ${{ inputs.manager }}
             - LTO: ${{ inputs.lto }}
             - Date: ${{ env.DATE }}
+            - Build System: ${{ inputs.kernel_version == '6.6' && 'Bazel/Kleaf' || 'Legacy build.sh' }}
