@@ -28,7 +28,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+          fetch-depth: 1
 
       - name: Set Variables
         run: |
@@ -50,15 +51,20 @@ jobs:
         run: |
           mkdir kernel && cd kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1 --quiet
-          repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle --optimized-fetch
+          repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle --optimized-fetch --current-branch
 
       - name: Init Manager
         if: ${{ inputs.manager != 'None' }}
         run: |
-          git submodule update --init --recursive --depth 1 --single-branch manager/${{ inputs.manager }}
+          # Only checkout the specific manager used, with depth 1
+          git submodule update --init --depth 1 --single-branch manager/${{ inputs.manager }}
           MANAGER_PATH="${{ github.workspace }}/manager/${{ inputs.manager }}"
           cd kernel/common
-          [ -f "$MANAGER_PATH/kernel/setup.sh" ] && bash "$MANAGER_PATH/kernel/setup.sh" || bash "$MANAGER_PATH/setup.sh"
+          if [ -f "$MANAGER_PATH/kernel/setup.sh" ]; then
+            bash "$MANAGER_PATH/kernel/setup.sh"
+          else
+            bash "$MANAGER_PATH/setup.sh"
+          fi
 
       - name: Build Kernel
         run: |
@@ -75,6 +81,7 @@ jobs:
           export SKIP_DEBUG_INFO=1
           export BUILD_CONFIG=common/build.config.gki.aarch64
           export GKI_DEFCONFIG_FRAGMENT="$(pwd)/perf_fragment"
+          
           JOBS=$(nproc)
           [ "${{ inputs.lto }}" = "full" ] && JOBS=1
           bash build/build.sh -j${JOBS}
@@ -85,7 +92,10 @@ jobs:
           echo "UPSTREAM_VER=$UPSTREAM" >> $GITHUB_ENV
           FINAL_NAME="v${UPSTREAM}-${{ inputs.manager }}-${{ env.DATE }}"
           echo "FINAL_NAME=$FINAL_NAME" >> $GITHUB_ENV
+          
+          mkdir -p .github/patches/anykernel3
           cp kernel/out/*/dist/Image .github/patches/anykernel3/Image
+          
           cd .github/patches/anykernel3
           zip -r9 "../../../${FINAL_NAME}.zip" * -x .git README.md
           cd ../../../
