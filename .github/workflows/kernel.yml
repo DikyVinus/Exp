@@ -63,7 +63,7 @@ jobs:
       - name: Create Coreshift fragment
         if: ${{ inputs.droidspace == true }}
         run: |
-          cat > Coreshift.fragment << 'EOF'
+          cat > $GITHUB_WORKSPACE/Coreshift.fragment << 'EOF'
           CONFIG_SYSVIPC=y
           CONFIG_DEVTMPFS=y
           CONFIG_PID_NS=y
