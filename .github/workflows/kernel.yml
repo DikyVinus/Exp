@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS + Manager)
+name: Build Kernel (GKI LTS)
 
 on:
   workflow_dispatch:
@@ -85,7 +85,7 @@ jobs:
         run: |
           cd kernel
           JOBS=$(nproc)
-          [ "${{ inputs.lto }}" = "full" ] && JOBS=2
+          [ "${{ inputs.lto }}" = "full" ] && JOBS=1
           
           export USE_CCACHE=1
           export CCACHE_DIR="${{ github.workspace }}/.ccache"
