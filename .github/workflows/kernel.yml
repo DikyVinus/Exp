@@ -23,7 +23,8 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Cache repo
         uses: actions/cache@v4
@@ -50,7 +51,6 @@ jobs:
         run: |
           mkdir -p kernel
           cd kernel
-
           repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync --optimized-fetch --prune
 
@@ -64,15 +64,18 @@ jobs:
         if: ${{ inputs.droidspace == true }}
         run: |
           cat > $GITHUB_WORKSPACE/Coreshift.fragment << 'EOF'
+          # Kernel configurations for full DroidSpaces support for GKI
+          # Copyright (C) 2026 ravindu644 <droidcasts@protonmail.com>
+
+          # IPC
           CONFIG_SYSVIPC=y
-          CONFIG_DEVTMPFS=y
-          CONFIG_PID_NS=y
           CONFIG_POSIX_MQUEUE=y
+
+          # Namespaces
           CONFIG_IPC_NS=y
-          CONFIG_UTS_NS=y
-          CONFIG_NET_NS=y
-          CONFIG_USER_NS=y
-          CONFIG_TMPFS_XATTR=y
+          CONFIG_PID_NS=y
+          # HW Access Support
+          CONFIG_DEVTMPFS=y
           EOF
 
       - name: Apply KernelSU Next
@@ -85,7 +88,6 @@ jobs:
       - name: Build kernel (fragment-driven)
         run: |
           cd kernel
-
           if [ -f "build/build.sh" ]; then
             SKIP_MRPROPER=1 \
             LTO=thin \
@@ -106,7 +108,8 @@ jobs:
           cd ak3
           zip -r kernel-${{ inputs.kernel_version }}-${{ github.run_number }}.zip .
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ inputs.kernel_version }}-${{ github.run_number }}
           path: ak3/*.zip
