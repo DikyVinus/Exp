@@ -56,7 +56,6 @@ jobs:
       - name: Init Manager
         if: ${{ inputs.manager != 'None' }}
         run: |
-          # Only checkout the specific manager used, with depth 1
           git submodule update --init --depth 1 --single-branch manager/${{ inputs.manager }}
           MANAGER_PATH="${{ github.workspace }}/manager/${{ inputs.manager }}"
           cd kernel/common
