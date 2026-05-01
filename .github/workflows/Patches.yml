@@ -4,12 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Kernel version (e.g., 5.10)'
+        description: 'Kernel version folder (e.g., 5.10)'
         required: true
+        type: string
         default: '5.10'
-      upstream_tag:
-        description: 'The LTS tag to compare against (e.g., v5.10.252)'
+      base_branch:
+        description: 'The GKI branch you forked from (e.g., common-android12-5.10-lts)'
         required: true
+        type: string
+        default: 'common-android12-5.10-lts'
 
 jobs:
   generate:
@@ -20,38 +23,39 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-          fetch-depth: 0 # Important: Fetch all history to find the upstream tag
+          fetch-depth: 0 # Full history is required to find the common ancestor
 
       - name: Generate Patches
         run: |
-          # Navigate to your submodule path
+          # 1. Enter the submodule directory
           SUBMODULE_PATH="repo/src/${{ inputs.version }}"
-          
           if [ ! -d "$SUBMODULE_PATH" ]; then
-            echo "Error: Submodule directory $SUBMODULE_PATH not found!"
+            echo "Error: Directory $SUBMODULE_PATH does not exist."
             exit 1
           fi
-          
           cd "$SUBMODULE_PATH"
-          
-          # Add the official Linux LTS as a remote to ensure we have the upstream tag
-          git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-          git fetch upstream tag ${{ inputs.upstream_tag }} --no-tags
-          
-          # Create output directory in workspace root
-          mkdir -p ../../../../patches
-          
-          # Generate formatted patches from the upstream tag to your current HEAD
-          git format-patch ${{ inputs.upstream_tag }}..HEAD -o ../../../../patches/
-          
-          # Check if any patches were created
-          if [ -z "$(ls -A ../../../../patches/)" ]; then
-            echo "No changes found between ${{ inputs.upstream_tag }} and HEAD."
-            exit 1
+
+          # 2. Add Android Common as a remote to find the fork point
+          git remote add android https://android.googlesource.com/kernel/common.git
+          git fetch android ${{ inputs.base_branch }} --quiet
+
+          # 3. Create the patches directory in the root workspace
+          PATCH_DIR="${{ github.workspace }}/extracted_patches"
+          mkdir -p "$PATCH_DIR"
+
+          # 4. Generate patches: from the Android base branch to your current HEAD
+          # This excludes all GKI history and only takes YOUR commits
+          git format-patch android/${{ inputs.base_branch }}..HEAD -o "$PATCH_DIR"
+
+          # 5. Check results
+          if [ -z "$(ls -A $PATCH_DIR)" ]; then
+            echo "No custom commits found compared to ${{ inputs.base_branch }}."
+            exit 0
           fi
+          echo "Patches generated successfully."
 
       - name: Upload Patches
         uses: actions/upload-artifact@v4
         with:
           name: kernel-patches-${{ inputs.version }}
-          path: patches/*.patch
+          path: extracted_patches/*.patch
