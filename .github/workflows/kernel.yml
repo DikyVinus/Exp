@@ -70,7 +70,8 @@ jobs:
       - name: Apply DroidSpaces patches
         if: ${{ inputs.droidspace == true }}
         run: |
-          FILE="kernel/common/ipc/msg.c"
+          cd kernel/common
+          FILE="ipc/msg.c"
 
           if grep -q "msg_init_ns(struct ipc_namespace" "$FILE"; then
             sed -i '/void msg_init_ns(struct ipc_namespace *ns)/,/^}/c\
