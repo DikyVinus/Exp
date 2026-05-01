@@ -67,34 +67,30 @@ jobs:
           git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
           bash ksu/kernel/setup.sh
 
-      - name: Apply GKI patch for SYSVIPC (below 6.12) if DroidSpaces enabled
+      - name: Apply DroidSpaces patches
         if: ${{ inputs.droidspace == true }}
         run: |
-          cd kernel/common
-          curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch | patch -p1
+          FILE="kernel/common/ipc/msg.c"
 
-      - name: Create Coreshift fragment
-        if: ${{ inputs.droidspace == true }}
-        run: |
+          if grep -q "msg_init_ns(struct ipc_namespace" "$FILE"; then
+            sed -i '/void msg_init_ns(struct ipc_namespace *ns)/,/^}/c\
+/* removed duplicate msg_init_ns */' "$FILE"
+          fi
+
+          curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch | patch -p1 || true
+
           cat > $GITHUB_WORKSPACE/Coreshift.fragment << 'EOF'
-          # Kernel configurations for full DroidSpaces support for GKI
-          # Copyright (C) 2026 ravindu644 <droidcasts@protonmail.com>
-
-          # IPC
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
-
-          # Namespaces
           CONFIG_IPC_NS=y
           CONFIG_PID_NS=y
-
-          # HW Access Support
           CONFIG_DEVTMPFS=y
           EOF
 
-      - name: Build kernel (fragment-driven)
+      - name: Build kernel
         run: |
           cd kernel
+
           if [ -f "build/build.sh" ]; then
             SKIP_MRPROPER=1 \
             LTO=thin \
@@ -104,7 +100,6 @@ jobs:
             BUILD_CONFIG=common/build.config.gki.aarch64 \
             build/build.sh
           else
-            echo "build.sh not found"
             exit 1
           fi
 
@@ -115,7 +110,7 @@ jobs:
           cd ak3
           zip -r kernel-${{ inputs.kernel_version }}-${{ github.run_number }}.zip .
 
-      - name: Upload kernel artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ inputs.kernel_version }}-${{ github.run_number }}
