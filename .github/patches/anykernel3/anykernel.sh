@@ -19,7 +19,7 @@ supported.vendorpatchlevels=
 ### AnyKernel install
 
 BLOCK=boot
-IS_SLOT_DEVICE=1
+IS_SLOT_DEVICE=auto
 RAMDISK_COMPRESSION=auto
 PATCH_VBMETA_FLAG=auto
 
