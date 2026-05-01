@@ -86,6 +86,12 @@ jobs:
           echo "UPSTREAM_VER=$UPSTREAM" >> $GITHUB_ENV
           FINAL_NAME="v${UPSTREAM}-${{ inputs.manager }}-${{ env.DATE }}"
           echo "FINAL_NAME=$FINAL_NAME" >> $GITHUB_ENV
+          mkdir ak3_work
+          cp -r .github/patches/anykernel3/* ak3_work/
+          cp kernel/out/*/dist/Image ak3_work/
+          cd ak3_work
+          zip -r9 "../$FINAL_NAME.zip" *
+          cd ..
           mkdir -p out/
           cp kernel/out/*/dist/Image out/Image-$FINAL_NAME
 
@@ -94,8 +100,11 @@ jobs:
         with:
           tag_name: ${{ env.FINAL_NAME }}
           name: ${{ env.FINAL_NAME }}
-          files: out/Image-*
+          files: |
+            *.zip
+            out/Image-*
           body: |
-            - Kernel: ${{ env.UPSTREAM_VER }}
+            - Upstream: ${{ env.UPSTREAM_VER }}
             - Manager: ${{ inputs.manager }}
             - LTO: ${{ inputs.lto }}
+            - Date: ${{ env.DATE }}
