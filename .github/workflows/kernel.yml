@@ -68,13 +68,14 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          echo "CONFIG_TMPFS_XATTR=y" >> common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TMPFS_XATTR=y" > coreshift_fragment
+          export BUILD_CONFIG=common/build.config.gki.aarch64
           export LTO=${{ inputs.lto }}
+          export POST_DEFCONFIG_CMDS="scripts/kconfig/merge_config.sh -m -O \${OUT_DIR} \${OUT_DIR}/.config ../coreshift_fragment"
           export SKIP_MRPROPER=1
           export SKIP_CP_KERNEL_HDRS=1
           export SKIP_UNSTRIPPED_MODULES=1
           export SKIP_DEBUG_INFO=1
-          export BUILD_CONFIG=common/build.config.gki.aarch64
           JOBS=$(nproc)
           [ "${{ inputs.lto }}" = "full" ] && JOBS=1
           bash build/build.sh -j${JOBS}
