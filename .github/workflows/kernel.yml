@@ -102,7 +102,7 @@ jobs:
           # 3. Optimized Ccache Environment
           export USE_CCACHE=1
           export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          export CCACHE_MAXSIZE=6G
+          export CCACHE_MAXSIZE=12G
           export CCACHE_COMPRESS=true
           export CCACHE_COMPRESSLEVEL=3
           export CCACHE_BASEDIR="${{ github.workspace }}"
