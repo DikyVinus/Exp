@@ -85,9 +85,7 @@ jobs:
           CONFIG_DEVTMPFS=y
           EOF
 
-          # Apply the DroidSpaces main patches
-          curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.GKI-droidspaces-patch.patch | patch -p1 || true
-
+          patch -p1 < "${{ github.workspace }}/.github/patches/ipc.patch"
       - name: Build kernel
         run: |
           cd kernel
