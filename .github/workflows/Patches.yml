@@ -27,7 +27,7 @@ jobs:
 
       - name: Initialize Target Submodule
         run: |
-          SUBMODULE_PATH="repo/src/${{ inputs.version }}"
+          SUBMODULE_PATH="${{ github.workspace }}/src/${{ inputs.version }}"
           echo "Targeting: $SUBMODULE_PATH"
           
           # Initialize ONLY the requested submodule folder
