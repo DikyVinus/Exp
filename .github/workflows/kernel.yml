@@ -77,10 +77,7 @@ jobs:
 
           if [[ "${{ inputs.kernel_version }}" == "6.1" || "${{ inputs.kernel_version }}" == "6.6" ]]; then
             unset BUILD_CONFIG
-            tools/bazel run //common:kernel_aarch64_dist \
-              --lto=${{ inputs.lto }} \
-              --jobs=${JOBS} \
-              --dist_dir=out/dist
+            tools/bazel run //common:kernel_aarch64_dist -- --dist_dir=out/dist
           else
             export BUILD_CONFIG=common/build.config.gki.aarch64
             export LTO=${{ inputs.lto }}
@@ -119,4 +116,4 @@ jobs:
             - Manager: ${{ inputs.manager }}
             - LTO: ${{ inputs.lto }}
             - Date: ${{ env.DATE }}
-            - Engine: ${{ (inputs.kernel_version == '6.1' || inputs.kernel_version == '6.6') && 'Bazel' || 'Legacy' }}
+            - Engine: ${{ (inputs.kernel_version == '6.1' || inputs.kernel_version == '6.6') && 'Bazel/Kleaf' || 'Legacy build.sh' }}
