@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS + Coreshift + KernelSU Next)
+name: Build Kernel (GKI LTS + Manager)
 
 on:
   workflow_dispatch:
@@ -7,106 +7,93 @@ on:
         type: choice
         required: true
         options: ["5.10", "6.1", "6.6"]
-
-      droidspace:
-        type: boolean
+      manager:
+        type: choice
         required: true
-        default: false
-
-      kernelsu:
-        type: boolean
+        options: ["None", "KernelSU-Next", "KernelSU", "KowSU", "ResukiSU", "Rissu", "Wild_KSU"]
+        default: "None"
+      lto:
+        type: choice
         required: true
-        default: false
+        options: ["thin", "full", "none"]
+        default: "thin"
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache repo
-        uses: actions/cache@v4
-        with:
-          path: kernel/.repo
-          key: repo-${{ inputs.kernel_version }}
-
-      - name: Install repo tool
+      - name: Set Variables
         run: |
-          mkdir -p ~/bin
-          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod +x ~/bin/repo
-          echo "$HOME/bin" >> $GITHUB_PATH
-
-      - name: Set GKI branch
-        run: |
+          echo "DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
           case "${{ inputs.kernel_version }}" in
             5.10) echo "BRANCH=common-android12-5.10-lts" >> $GITHUB_ENV ;;
             6.1)  echo "BRANCH=common-android14-6.1-lts" >> $GITHUB_ENV ;;
             6.6)  echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV ;;
           esac
 
-      - name: Sync GKI source
-        run: |
-          mkdir -p kernel
-          cd kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH
-          repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync --optimized-fetch --prune
-
-      - name: Clean kernel tree
-        run: |
-          cd kernel/common
-          make mrproper
-          rm -rf ../out
-
-      - name: Apply KernelSU Next
-        if: ${{ inputs.kernelsu == true }}
-        run: |
-          cd kernel/common
-          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
-          bash ksu/kernel/setup.sh
-
-      - name: Apply DroidSpaces patches
-        if: ${{ inputs.droidspace == true }}
-        run: |
-          # Ensure we're in the kernel/common directory
-          cd kernel/common
-
-          # Apply the IPC fix patch first
-          curl -L https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch | patch -p1 || true
-
-          # Create the Coreshift config fragment
-          cat > $GITHUB_WORKSPACE/Coreshift.fragment << 'EOF'
-          CONFIG_SYSVIPC=y
-          CONFIG_POSIX_MQUEUE=y
-          CONFIG_IPC_NS=y
-          CONFIG_PID_NS=y
-          CONFIG_DEVTMPFS=y
-          EOF
-
-          patch -p1 < "${{ github.workspace }}/.github/patches/ipc.patch"
-      - name: Build kernel
-        run: |
-          cd kernel
-
-          if [ -f "build/build.sh" ]; then
-            SKIP_MRPROPER=1 \
-            LTO=thin \
-            build/build.sh
-          else
-            exit 1
-          fi
-
-      - name: Package AnyKernel3
-        run: |
-          git clone --depth=1 https://github.com/DikyVinus/AnyKernel3 ak3
-          cp $(find kernel -name Image -type f | head -n1) ak3/
-          cd ak3
-          zip -r kernel-${{ inputs.kernel_version }}-${{ github.run_number }}.zip .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Cache Repo
+        uses: actions/cache@v4
         with:
-          name: kernel-${{ inputs.kernel_version }}-${{ github.run_number }}
-          path: ak3/*.zip
+          path: kernel/.repo
+          key: repo-${{ inputs.kernel_version }}-${{ env.BRANCH }}
+
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Sync Source
+        run: |
+          mkdir kernel && cd kernel
+          repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1 --quiet
+          # --no-clone-bundle saves time by not downloading large bundle files from Google
+          repo sync -c -j$(nproc) --force-sync --no-tags --no-clone-bundle --optimized-fetch
+
+      - name: Init Manager
+        if: ${{ inputs.manager != 'None' }}
+        run: |
+          git submodule update --init --recursive --depth 1 --single-branch manager/${{ inputs.manager }}
+          MANAGER_PATH="${{ github.workspace }}/manager/${{ inputs.manager }}"
+          cd kernel/common
+          [ -f "$MANAGER_PATH/kernel/setup.sh" ] && bash "$MANAGER_PATH/kernel/setup.sh" || bash "$MANAGER_PATH/setup.sh"
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          # Export variables for the build script
+          export LTO=${{ inputs.lto }}
+          export SKIP_MRPROPER=1
+          export SKIP_CP_KERNEL_HDRS=1
+          
+          # Use all cores and target only the GKI config
+          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh -j$(nproc)
+
+      - name: Prepare Artifact
+        run: |
+          UPSTREAM=$(make -C kernel/common kernelversion)
+          FINAL_NAME="v${UPSTREAM}-${{ inputs.manager }}-${{ env.DATE }}"
+          echo "FINAL_NAME=$FINAL_NAME" >> $GITHUB_ENV
+          
+          mkdir -p out/
+          # Optimization: Look only in the 'dist' folder where the final Image is placed
+          cp kernel/out/*/dist/Image out/Image-$FINAL_NAME
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.FINAL_NAME }}
+          name: ${{ env.FINAL_NAME }}
+          files: out/Image-*
+          body: |
+            **Build Details**
+            - Upstream: ${{ env.FINAL_NAME }}
+            - Manager: ${{ inputs.manager }}
+            - LTO: ${{ inputs.lto }}
