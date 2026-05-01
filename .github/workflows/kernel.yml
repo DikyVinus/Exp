@@ -1,4 +1,4 @@
-name: Build Kernel (GKI LTS)
+name: Build Kernel (GKI LTS + Manager)
 
 on:
   workflow_dispatch:
@@ -37,10 +37,20 @@ jobs:
             6.6)  echo "BRANCH=common-android15-6.6-lts" >> $GITHUB_ENV ;;
           esac
 
-      - name: Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-          # Provides about 4-5GB extra breathing room for GKI builds
+      - name: Aggressive Free Disk Space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: "rmz"
+          rmz_version: "3.1.1"
+          testing: false
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -74,7 +84,6 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          # Manage CPU jobs to prevent OOM
           JOBS=$(nproc)
           [ "${{ inputs.lto }}" = "full" ] && JOBS=2
           
@@ -90,14 +99,9 @@ jobs:
           
           BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh -j$JOBS
 
-      - name: Check ccache Stats
-        run: |
-          export CCACHE_DIR="${{ github.workspace }}/.ccache"
-          ccache -s
-
       - name: Prepare Artifact
         run: |
-          # Robust extraction of version from Makefile (Avoids 'make' noise/directory logs)
+          # Pure text extraction from Makefile to avoid any 'make' environment noise
           UPSTREAM=$(head -n 4 kernel/common/Makefile | awk '{print $3}' | paste -sd '.' -)
           echo "UPSTREAM_VER=$UPSTREAM" >> $GITHUB_ENV
           
@@ -105,7 +109,6 @@ jobs:
           echo "FINAL_NAME=$FINAL_NAME" >> $GITHUB_ENV
           
           mkdir -p out/
-          # Safely copy the Image to out/ using the clean version string
           cp kernel/out/*/dist/Image "out/Image-$FINAL_NAME"
 
       - name: Create Release
@@ -120,4 +123,3 @@ jobs:
             - **Manager:** `${{ inputs.manager }}`
             - **LTO Type:** `${{ inputs.lto }}`
             - **Build Date:** `${{ env.DATE }}`
-            - **Commit:** `${{ github.sha }}`
