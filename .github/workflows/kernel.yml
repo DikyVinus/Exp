@@ -72,6 +72,7 @@ jobs:
           CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
           CONFIG_CFI_CLANG=n
           CONFIG_KASAN=n
+          CONFIG_TMPFS_XATTR=y
           EOF
           export LTO=${{ inputs.lto }}
           export SKIP_MRPROPER=1
