@@ -1,61 +1,30 @@
-name: Generate Kernel Patches
-
-on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Kernel version folder (e.g., 5.10)'
-        required: true
-        type: string
-        default: '5.10'
-      base_branch:
-        description: 'The GKI branch you forked from (e.g., common-android12-5.10-lts)'
-        required: true
-        type: string
-        default: 'common-android12-5.10-lts'
-
-jobs:
-  generate:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout
+steps:
+      - name: Checkout Root (No Submodules)
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
-          fetch-depth: 0 # Full history is required to find the common ancestor
+          # We don't pull submodules here to save time and space
+          submodules: false
+          fetch-depth: 0 
+
+      - name: Initialize Specific Submodule
+        run: |
+          # Only initialize the specific folder passed in the inputs
+          SUBMODULE_PATH="repo/src/${{ inputs.version }}"
+          git submodule update --init --depth 1 "$SUBMODULE_PATH"
 
       - name: Generate Patches
         run: |
-          # 1. Enter the submodule directory
           SUBMODULE_PATH="repo/src/${{ inputs.version }}"
-          if [ ! -d "$SUBMODULE_PATH" ]; then
-            echo "Error: Directory $SUBMODULE_PATH does not exist."
-            exit 1
-          fi
           cd "$SUBMODULE_PATH"
-
-          # 2. Add Android Common as a remote to find the fork point
+          
+          # Force fetch the history of the submodule so we can compare commits
+          # (Initial shallow clone doesn't have the history needed for format-patch)
+          git fetch --unshallow || true
+          
           git remote add android https://android.googlesource.com/kernel/common.git
           git fetch android ${{ inputs.base_branch }} --quiet
-
-          # 3. Create the patches directory in the root workspace
+          
           PATCH_DIR="${{ github.workspace }}/extracted_patches"
           mkdir -p "$PATCH_DIR"
-
-          # 4. Generate patches: from the Android base branch to your current HEAD
-          # This excludes all GKI history and only takes YOUR commits
+          
           git format-patch android/${{ inputs.base_branch }}..HEAD -o "$PATCH_DIR"
-
-          # 5. Check results
-          if [ -z "$(ls -A $PATCH_DIR)" ]; then
-            echo "No custom commits found compared to ${{ inputs.base_branch }}."
-            exit 0
-          fi
-          echo "Patches generated successfully."
-
-      - name: Upload Patches
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-patches-${{ inputs.version }}
-          path: extracted_patches/*.patch
