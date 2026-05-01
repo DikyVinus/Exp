@@ -43,6 +43,14 @@ jobs:
           path: kernel/.repo
           key: repo-${{ inputs.kernel_version }}-${{ env.BRANCH }}
 
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ inputs.kernel_version }}-${{ env.BRANCH }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ inputs.kernel_version }}-${{ env.BRANCH }}-
+
       - name: Install repo
         run: |
           mkdir -p ~/bin
@@ -67,11 +75,17 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          # FIX LTO HANG: Scaling jobs down for LTO-Full to avoid OOM
+          # Job scaling for LTO
           JOBS=$(nproc)
           if [ "${{ inputs.lto }}" = "full" ]; then JOBS=2; fi
           
-          # MAX OPTIMIZATION: Skip all unnecessary binary processing
+          # ccache configuration
+          export USE_CCACHE=1
+          export CCACHE_DIR=${{ github.workspace }}/.ccache
+          export CCACHE_MAXSIZE=5G
+          export CCACHE_COMPRESS=1
+          
+          # Build variables
           export LTO=${{ inputs.lto }}
           export SKIP_MRPROPER=1
           export SKIP_CP_KERNEL_HDRS=1
@@ -95,8 +109,7 @@ jobs:
           name: ${{ env.FINAL_NAME }}
           files: out/Image-*
           body: |
-            **GKI Kernel Build**
-            - **Version:** ${{ env.FINAL_NAME }}
-            - **Manager:** ${{ inputs.manager }}
-            - **LTO:** ${{ inputs.lto }}
-            - **Status:** Build Optimized
+            **GKI Kernel Build (with ccache)**
+            - Upstream: ${{ env.FINAL_NAME }}
+            - Manager: ${{ inputs.manager }}
+            - LTO: ${{ inputs.lto }}
